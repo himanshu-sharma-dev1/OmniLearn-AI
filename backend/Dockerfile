@@ -36,6 +36,9 @@ COPY --from=builder /opt/venv /opt/venv
 # Copy the application code from the builder stage
 COPY --from=builder /app /app
 
+# Copy the migrations directory from the project root
+COPY ../migrations /app/migrations
+
 # Make port 5000 available to the world outside this container
 EXPOSE 5000
 
