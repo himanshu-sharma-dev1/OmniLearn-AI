@@ -49,5 +49,5 @@ ENV PATH="/opt/venv/bin:$PATH"
 ENV FLASK_APP app.py
 
 # Run app.py when the container launches
-# Use gunicorn for production
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "app:app"]
+# Use gunicorn for production and run migrations first
+CMD ["sh", "-c", "flask db upgrade && gunicorn --bind 0.0.0.0:5000 app:app"]
