@@ -10,7 +10,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y gcc ffmpeg
 
 # Copy the dependency files
-COPY ./requirements.txt /app/requirements.txt
+COPY backend/requirements.txt /app/requirements.txt
 
 # Install any needed packages specified in requirements.txt
 # Use a virtual environment
