@@ -16,22 +16,22 @@ Intelli-Tutor is a sophisticated, full-stack web application engineered to provi
 
 ## ✅ Core Capabilities
 
-*   **Personalized Knowledge Base Construction:** Users can upload PDF documents to create a secure, course-specific knowledge base, grounding the AI's responses in user-provided material.
-*   **Context-Aware AI Dialogue:** Engage in interactive conversations with an AI that understands the nuances of your uploaded documents, providing accurate and relevant answers.
-*   **Interactive Citation Highlighting:** Clickable citations in the AI's response instantly highlight and scroll to the relevant source document, providing seamless verification and building trust.
-*   **Automated Knowledge Assessment:** Instantly generate dynamic, multiple-choice quizzes from your source materials to identify knowledge gaps and reinforce learning.
-*   **On-Demand Study Guide Synthesis:** Automatically create structured and comprehensive study guides from complex documents with a single click.
-*   **Robust User & Course Management:** A secure, multi-user authentication system coupled with intuitive course creation and management tools.
+*   **📚 Multi-Source Knowledge Base:** Build a comprehensive knowledge base by uploading PDFs, or adding content from web URLs and YouTube videos.
+*   **🧠 AI-Powered Chat:** Engage in interactive conversations with an AI that understands the nuances of your uploaded documents. Get accurate, context-aware answers to your questions.
+*   **🔗 Interactive Citation Highlighting:** Clickable citations in the AI's response instantly highlight and scroll to the relevant source document, providing seamless verification and building trust.
+*   **📝 Automated Quiz Generation:** Instantly generate dynamic, multiple-choice quizzes from your source materials to test your knowledge and identify areas for improvement.
+*   **📖 On-Demand Study Guides:** Automatically create structured and comprehensive study guides from your course materials with a single click.
+*   **👤 Advanced User Profiles:** Customize your profile with an avatar, bio, and notification preferences.
 
 ## ✨ Modern & Intuitive User Experience
 
 The user interface is crafted to be professional, responsive, and highly intuitive, ensuring a seamless and engaging user journey.
 
-*   **Polished UI/UX:** A clean, modern interface built with `shadcn/ui` and `Tailwind CSS`, providing a consistent and aesthetically pleasing design system.
-*   **Light & Dark Modes:** A meticulously implemented theme that adapts to user preferences across all components, from modals to toast notifications.
-*   **Command Palette:** A `Cmd+K` interface for power users, enabling quick navigation and access to core application features.
-*   **Responsive Design:** A fully responsive layout that ensures a seamless experience on both desktop and mobile devices.
-*   **Non-Intrusive Feedback:** User actions are confirmed with clean, non-intrusive toast notifications for a smooth workflow.
+*   **🎨 Polished UI/UX:** A clean, modern interface built with `shadcn/ui` and `Tailwind CSS`, providing a consistent and aesthetically pleasing design system.
+*   **🌓 Light & Dark Modes:** A meticulously implemented theme that adapts to your preferences across all components, from modals to toast notifications.
+*   **⌨️ Command Palette:** A `Cmd+K` interface for power users, enabling quick navigation and access to core application features.
+*   **📱 Responsive Design:** A fully responsive layout that ensures a seamless experience on both desktop and mobile devices.
+*   **👍 Non-Intrusive Feedback:** User actions are confirmed with clean, non-intrusive toast notifications for a smooth workflow.
 
 ---
 
