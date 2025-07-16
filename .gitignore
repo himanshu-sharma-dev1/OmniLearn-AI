@@ -1,0 +1,22 @@
+# Environment variables
+# Do not commit this file to version control!
+backend/.env
+
+# Python
+backend/venv/
+backend/__pycache__/
+*.pyc
+
+# SQLite database
+backend/app.db
+
+# Node.js
+frontend/node_modules/
+frontend/.DS_Store
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE / Editor specific
+.vscode/
+.idea/

@@ -1,0 +1,217 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 220 14.3% 95.9%; /* slate-50 */
+    --foreground: 224 71.4% 4.1%;   /* slate-800 */
+    
+    --card: 0 0% 100%; /* white */
+    --card-foreground: 224 71.4% 4.1%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 224 71.4% 4.1%;
+
+    --primary: 243 75% 58%; /* Exact match for #4F46E5 */
+    --primary-foreground: 210 20% 98%;
+
+    --secondary: 220 14.3% 95.9%;
+    --secondary-foreground: 220.9 39.3% 11%;
+
+    --muted: 220 14.3% 95.9%;
+    --muted-foreground: 220 8.9% 46.1%;
+
+    --accent: 220 14.3% 95.9%;
+    --accent-foreground: 220.9 39.3% 11%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 20% 98%;
+
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 231 71% 58%; /* Match primary color */
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 210 40% 98%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 212.7 26.8% 83.9%;
+  }
+}
+
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+  }
+}
+
+/* Add basic styles for markdown content */
+.prose {
+  @apply text-base leading-7;
+}
+
+.prose h1, .prose h2, .prose h3, .prose h4, .prose h5, .prose h6 {
+  @apply font-semibold my-4;
+}
+
+.prose h1 {
+  @apply text-3xl;
+}
+
+.prose h2 {
+  @apply text-2xl;
+}
+
+.prose h3 {
+  @apply text-xl;
+}
+
+.prose p {
+  @apply my-4;
+}
+
+.prose ul, .prose ol {
+  @apply my-4 pl-6 list-disc;
+}
+
+.prose li {
+  @apply my-2;
+}
+
+.prose code {
+  @apply bg-gray-200 text-sm rounded px-1 py-0.5;
+}
+
+.prose pre {
+  @apply bg-gray-800 text-white p-4 rounded-md my-4 overflow-x-auto;
+}
+
+.prose blockquote {
+  @apply border-l-4 border-gray-300 pl-4 italic my-4;
+}
+
+/* Custom Scrollbar Styles */
+/* For Webkit browsers (Chrome, Safari) */
+::-webkit-scrollbar {
+  width: 8px; /* width of the scrollbar */
+  height: 8px; /* height of the scrollbar for horizontal scrollbars */
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1; /* color of the track */
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #888; /* color of the scroll thumb */
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #555; /* color of the scroll thumb on hover */
+}
+
+/* For Firefox */
+/* Note: Firefox uses different properties for scrollbar styling */
+/* You might need to add these to your tailwind.config.js if you want to use utility classes */
+/* For example, in tailwind.config.js plugins: require('tailwind-scrollbar') */
+/* Or use direct CSS */
+/*
+  html {
+    scrollbar-width: thin;
+    scrollbar-color: #888 #f1f1f1;
+  }
+*/
+
+/* CMDK Styles - Professional Redesign */
+[cmdk-overlay] {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background-color: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+}
+
+[cmdk-dialog] {
+  position: fixed;
+  top: 25%;
+  left: 50%;
+  z-index: 50;
+  width: 100%;
+  max-width: 42rem;
+  transform: translateX(-50%) translateY(-50%);
+  border-radius: 0.5rem;
+  border-width: 1px;
+  border-color: hsl(var(--border));
+  background-color: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+}
+
+[cmdk-input] {
+  @apply w-full rounded-t-lg px-4 py-4 text-base font-medium text-foreground placeholder:text-muted-foreground focus:outline-none;
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+[cmdk-list] {
+  @apply max-h-[400px] overflow-y-auto p-2;
+}
+
+[cmdk-item] {
+  @apply flex cursor-pointer items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors;
+}
+
+[cmdk-item]:hover {
+  @apply bg-accent text-accent-foreground;
+}
+
+[cmdk-item][data-selected] {
+  @apply bg-primary text-primary-foreground;
+}
+
+[cmdk-item] svg {
+  @apply h-5 w-5;
+  color: inherit;
+}
+
+[cmdk-group-heading] {
+  @apply px-3 py-2 text-xs font-semibold text-muted-foreground;
+}
+
+[cmdk-empty] {
+  @apply py-6 text-center text-sm text-muted-foreground;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
