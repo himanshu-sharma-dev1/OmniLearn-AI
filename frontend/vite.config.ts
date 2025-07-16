@@ -6,6 +6,11 @@ import { defineConfig } from "vite"
 // https://vite.dev.dev/config/
 export default defineConfig({
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      external: ['detect-node-es'],
+    },
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
