@@ -7,6 +7,7 @@ services:
       - "5001:5000"
     volumes:
       - ./backend:/app
+      - ./migrations:/app/migrations
     env_file:
       - .env
     environment:
@@ -28,6 +29,8 @@ services:
         flask db upgrade &&\
         gunicorn --bind 0.0.0.0:5000 --timeout 300 app:app
       "
+    networks:
+      - omni-net
 
   frontend:
     build:
@@ -40,6 +43,8 @@ services:
       - /app/frontend/node_modules
     depends_on:
       - backend
+    networks:
+      - omni-net
 
   db:
     image: postgres:13-alpine
@@ -51,6 +56,12 @@ services:
       - POSTGRES_DB=intelli_tutor_db
     ports:
       - "5432:5432"
+    networks:
+      - omni-net
 
 volumes:
   postgres_data:
+
+networks:
+  omni-net:
+    driver: bridge
