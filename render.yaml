@@ -4,7 +4,6 @@
 #
 # services: defines your backend and frontend.
 # databases: defines your PostgreSQL database.
-
 services:
   # --- Backend Service ---
   - type: web
@@ -13,10 +12,6 @@ services:
     runtime: docker
     # Path to the backend's Dockerfile
     dockerfilePath: ./backend/Dockerfile
-    # Define the secret environment variables needed by the backend.
-    # We will create this group in the Render dashboard.
-    envVarGroups:
-      - name: omnilearn-secrets
     # Define the public environment variables.
     envVars:
       - key: DATABASE_URL
@@ -25,14 +20,12 @@ services:
           property: connectionString
       - key: PYTHON_VERSION
         value: 3.11.4
-
   # --- Frontend Service ---
   - type: web
     name: omnilearn-frontend
     runtime: docker
     # Path to the frontend's Dockerfile
     dockerfilePath: ./Dockerfile.frontend
-
 databases:
   # --- PostgreSQL Database ---
   - name: omnilearn-db
