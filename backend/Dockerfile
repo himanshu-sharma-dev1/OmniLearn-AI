@@ -46,8 +46,8 @@ EXPOSE 5000
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Define environment variable
-ENV FLASK_APP app.py
+ENV FLASK_APP backend.app
 
 # Run app.py when the container launches
 # Use gunicorn for production and run migrations first
-CMD ["sh", "-c", "flask db upgrade && gunicorn --bind 0.0.0.0:5000 app:app"]
+CMD ["sh", "-c", "python -m flask db upgrade && python -m gunicorn --bind 0.0.0.0:5000 backend.app:app"]
