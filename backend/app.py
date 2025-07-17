@@ -12,7 +12,7 @@ from flask_mail import Mail, Message
 from dotenv import load_dotenv
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-import rag_engine # Import the RAG engine
+from . import rag_engine # Import the RAG engine
 
 load_dotenv()
 
