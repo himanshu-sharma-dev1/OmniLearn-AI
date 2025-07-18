@@ -50,4 +50,4 @@ ENV FLASK_APP backend.app
 
 # Run app.py when the container launches
 # Use gunicorn for production and run migrations first
-CMD ["sh", "-c", "python -m flask db upgrade && python -m gunicorn --bind 0.0.0.0:5000 backend.app:app"]
+CMD ["sh", "-c", "python -m flask db upgrade && python -m gunicorn --bind 0.0.0.0:5000 --timeout 300 --log-level=debug --access-logfile - backend.app:app"]
