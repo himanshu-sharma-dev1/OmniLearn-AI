@@ -2,7 +2,7 @@
 import axios from 'axios';
 
 const apiClient = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || '/api', // Use environment variable for backend URL
+  baseURL: '/api', // This will be proxied by Nginx in production
 });
 
 // Add a request interceptor to include the token in headers

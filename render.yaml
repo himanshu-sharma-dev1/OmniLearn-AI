@@ -26,9 +26,6 @@ services:
     runtime: docker
     # Path to the frontend's Dockerfile
     dockerfilePath: ./Dockerfile.frontend
-    envVars:
-      - key: VITE_API_BASE_URL
-        value: http://omnilearn-backend:5000
 databases:
   # --- PostgreSQL Database ---
   - name: omnilearn-db
