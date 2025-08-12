@@ -1,3 +1,6 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.3.1
+torchaudio==2.3.1
 Flask
 Flask-SQLAlchemy
 Flask-JWT-Extended
@@ -9,7 +12,7 @@ google-generativeai
 numpy
 werkzeug
 scikit-learn
-psycopg2-binary
+psycopg[binary]
 gunicorn
 trafilatura
 yt-dlp

@@ -2,7 +2,7 @@
 import axios from 'axios';
 
 const apiClient = axios.create({
-  baseURL: '/api', // This will be proxied by Nginx in production
+  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000',
 });
 
 // Add a request interceptor to include the token in headers

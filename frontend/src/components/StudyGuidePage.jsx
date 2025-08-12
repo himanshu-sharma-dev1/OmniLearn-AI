@@ -20,7 +20,7 @@ const StudyGuidePage = () => {
             setIsLoading(true);
             setError(null);
             try {
-                const response = await fetch(`/api/courses/${courseId}/generate-study-guide`, {
+                const response = await fetch(`https://omnilearn-backend.fly.dev/courses/${courseId}/generate-study-guide`, {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${localStorage.getItem('token')}`

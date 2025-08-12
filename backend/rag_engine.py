@@ -16,8 +16,8 @@ import whisper
 # --- Configuration ---
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 EMBEDDING_MODEL = 'all-MiniLM-L6-v2'
-VECTOR_STORES_DIR = os.path.join(os.path.dirname(__file__), 'vector_stores')
-TEMP_AUDIO_DIR = os.path.join(os.path.dirname(__file__), 'temp_audio')
+VECTOR_STORES_DIR = os.path.join('/app/data', 'vector_stores')
+TEMP_AUDIO_DIR = os.path.join('/app/data', 'temp_audio')
 
 if not os.path.exists(VECTOR_STORES_DIR):
     os.makedirs(VECTOR_STORES_DIR)
@@ -83,8 +83,13 @@ def process_url(url):
             os.remove(temp_audio_path)
 
         except Exception as e:
-            print(f"Error processing YouTube URL: {e}")
-            return None, None
+            error_message = str(e)
+            if "Sign in to confirm you’re not a bot" in error_message or "confirm your age" in error_message:
+                print(f"Error processing YouTube URL: YouTube bot detection/sign-in required. {error_message}")
+                return None, "YouTube bot detection or sign-in required. Cannot process this video."
+            else:
+                print(f"Error processing YouTube URL: {error_message}")
+                return None, None
     else:
         # --- Generic Web Page Processing ---
         downloaded = trafilatura.fetch_url(url)
@@ -112,13 +117,21 @@ def get_all_text_for_course(document_models):
     Loads and concatenates all text chunks from a list of document models.
     """
     full_text = ""
+    print("DEBUG: Starting get_all_text_for_course...")
     for doc in document_models:
         chunks_path = doc.vector_store_path.replace('_vectors.pkl', '_chunks.pkl')
         if os.path.exists(chunks_path):
-            with open(chunks_path, 'rb') as f:
-                chunks = pickle.load(f)
-                full_text += f"\n\n--- Content from {doc.filename} ---\n"
-                full_text += "\n".join(chunks)
+            try:
+                with open(chunks_path, 'rb') as f:
+                    chunks = pickle.load(f)
+                    full_text += f"\n\n--- Content from {doc.filename} ---\n"
+                    full_text += "\n".join(chunks)
+                    print(f"DEBUG: Added chunks from {doc.filename}. Current full_text length: {len(full_text)}")
+            except Exception as e:
+                print(f"ERROR: Failed to load chunks from {chunks_path}: {e}")
+        else:
+            print(f"DEBUG: Chunks file not found for document {doc.id}: {chunks_path}")
+    print(f"DEBUG: Finished get_all_text_for_course. Final full_text length: {len(full_text)}")
     return full_text
 
 def create_vector_store(chunks, course_id, document_id):
@@ -178,7 +191,8 @@ def query_rag(question, course_id, document_models):
                             })
 
         if not all_embeddings:
-            return "Could not load any course materials. Please check the uploaded documents."
+            print("DEBUG: No embeddings loaded for RAG query.")
+            return {"answer": "Could not load any course materials. Please ensure documents are uploaded and processed.", "sources": []}
 
         all_doc_embeddings = np.vstack(all_embeddings)
 
@@ -336,6 +350,7 @@ def generate_quiz_from_docs(document_models):
                     full_context += f"Source: {doc.filename}\n---\n" + "\n".join(chunks[:5]) + "\n---\n\n"
         
         if not full_context.strip():
+            print("DEBUG: Full context for quiz generation is empty.")
             return {"error": "Could not extract any text from the documents."}
 
         prompt = f"""
@@ -360,8 +375,16 @@ def generate_quiz_from_docs(document_models):
         model = genai.GenerativeModel('gemini-2.5-flash')
         response = model.generate_content(prompt)
         
-        # Clean the response to get only the JSON part
-        json_response_text = response.text.strip().replace("```json", "").replace("```", "")
+        print(f"DEBUG: Raw Gemini quiz response: {response.text}")
+
+        # Robustly extract the JSON part
+        json_match = re.search(r"```json\n(.*?)""```", response.text, re.DOTALL)
+        if json_match:
+            json_response_text = json_match.group(1).strip()
+        else:
+            # Fallback if ```json block is not found, try to parse the whole text
+            json_response_text = response.text.strip()
+            print(f"WARNING: '```json```' block not found in quiz response. Attempting to parse full text: {json_response_text[:200]}...")
         
         quiz_data = json.loads(json_response_text)
         return {"quiz": quiz_data}
@@ -399,6 +422,8 @@ def generate_study_guide_from_text(full_text):
     """
     Generates a study guide by streaming from the Gemini model.
     """
+    print(f"DEBUG: Study guide full_text length: {len(full_text)}")
+
     prompt = f"""
     You are an expert academic assistant. Based on the entire text from the course materials provided below, generate a comprehensive study guide.
 
@@ -417,9 +442,19 @@ def generate_study_guide_from_text(full_text):
 
     **Study Guide:**
     """
+    print(f"DEBUG: Study guide prompt length: {len(prompt)} characters")
+
     model = genai.GenerativeModel('gemini-2.5-flash')
-    response_stream = model.generate_content(prompt, stream=True)
-    
-    for chunk in response_stream:
-        if chunk.text:
-            yield chunk.text
+    try:
+        response_stream = model.generate_content(prompt, stream=True)
+        
+        for chunk in response_stream:
+            if chunk.text:
+                print(f"DEBUG: Received chunk: {chunk.text[:100]}...") # Log first 100 chars of each chunk
+                yield chunk.text
+    except Exception as e:
+        import traceback
+        print(f"ERROR: Exception during study guide streaming: {e}")
+        traceback.print_exc()
+        # Re-raise the exception or yield an error message if appropriate for the stream
+        yield f"Error: An unexpected error occurred during study guide generation: {e}"

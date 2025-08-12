@@ -46,8 +46,8 @@ const ProfilePage = () => {
 
   const getAvatarUrl = (path) => {
     if (!path) return null;
-    // Use the apiClient's baseURL to construct the full URL
-    return `${apiClient.defaults.baseURL}/${path}`;
+    // Construct the full URL using the backend's public URL
+    return `https://omnilearn-backend.fly.dev/uploads/${path}`;
   };
 
   useEffect(() => {

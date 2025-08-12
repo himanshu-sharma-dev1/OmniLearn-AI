@@ -9,12 +9,14 @@ from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identi
 from flask_cors import CORS
 from flask_migrate import Migrate
 from flask_mail import Mail, Message
-from dotenv import load_dotenv
+
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from . import rag_engine # Import the RAG engine
 
-load_dotenv()
+from dotenv import load_dotenv
+
+load_dotenv(override=False)
 
 app = Flask(__name__)
 CORS(app)
@@ -31,7 +33,7 @@ else:
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JWT_SECRET_KEY'] = str(os.environ.get('JWT_SECRET_KEY', 'super-secret-key-for-intelli-tutor'))
-app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['UPLOAD_FOLDER'] = os.path.join('/app/data', 'uploads')
 app.config['MAIL_SERVER'] = os.environ.get('MAIL_SERVER')
 app.config['MAIL_PORT'] = int(os.environ.get('MAIL_PORT', 587))
 app.config['MAIL_USE_TLS'] = os.environ.get('MAIL_USE_TLS', 'true').lower() in ['true', 'on', '1']
@@ -225,7 +227,7 @@ def reset_password():
 @app.route('/profile', methods=['GET', 'PUT', 'DELETE'])
 @jwt_required()
 def profile():
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
     user = User.query.get(current_user_id)
 
     if request.method == 'GET':
@@ -267,7 +269,7 @@ def profile():
 @app.route('/profile/avatar', methods=['POST'])
 @jwt_required()
 def upload_avatar():
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
     user = User.query.get(current_user_id)
 
     if 'avatar' not in request.files:
@@ -283,9 +285,11 @@ def upload_avatar():
         avatar_path = os.path.join(app.config['UPLOAD_FOLDER'], 'avatars', filename)
         os.makedirs(os.path.dirname(avatar_path), exist_ok=True)
         file.save(avatar_path)
-        user.avatar = avatar_path
+        # Store only the relative path in the database
+        relative_avatar_path = os.path.join('avatars', filename)
+        user.avatar = relative_avatar_path
         db.session.commit()
-        return jsonify({"msg": "Avatar updated successfully", "avatar_path": avatar_path}), 200
+        return jsonify({"msg": "Avatar updated successfully", "avatar_path": relative_avatar_path}), 200
 
 
 # --- Intelli-Tutor Endpoints ---
@@ -293,7 +297,7 @@ def upload_avatar():
 @app.route('/courses', methods=['POST'])
 @jwt_required()
 def create_course():
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
     data = request.get_json()
     course_name = data.get('name')
 
@@ -309,7 +313,7 @@ def create_course():
 @app.route('/courses', methods=['GET'])
 @jwt_required()
 def get_courses():
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
     courses = Course.query.filter_by(user_id=current_user_id).all()
     courses_data = []
     for c in courses:
@@ -326,6 +330,7 @@ def get_courses():
 @app.route('/courses/<int:course_id>', methods=['GET'])
 @jwt_required()
 def get_course(course_id):
+    current_user_id = int(get_jwt_identity())
     course = Course.query.get_or_404(course_id)
     documents_data = [{"id": doc.id, "filename": doc.filename} for doc in course.documents]
     course_data = {
@@ -604,7 +609,7 @@ def delete_document(course_id, document_id):
 @app.route('/courses/<int:course_id>/generate-quiz', methods=['POST'])
 @jwt_required()
 def generate_quiz(course_id):
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
     course = Course.query.get(course_id)
     if not course:
         return jsonify({"msg": "Course not found"}), 404
@@ -628,7 +633,7 @@ def generate_quiz(course_id):
 @app.route('/courses/<int:course_id>/quizzes/submit', methods=['POST'])
 @jwt_required()
 def submit_quiz(course_id):
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
     data = request.get_json()
     responses = data.get('responses') # Expecting a list of {question, selected_option, correct_option}
 
@@ -674,7 +679,7 @@ def submit_quiz(course_id):
 @app.route('/courses/<int:course_id>/quizzes/history', methods=['GET'])
 @jwt_required()
 def get_quiz_history(course_id):
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
     attempts = QuizAttempt.query.filter_by(user_id=current_user_id, course_id=course_id).order_by(QuizAttempt.timestamp.desc()).all()
 
     history_data = []
@@ -701,24 +706,30 @@ def generate_study_guide(course_id):
     current_user_id = int(get_jwt_identity())
     course = Course.query.get(course_id)
 
+    print(f"DEBUG: Received request for study guide generation for course {course_id}")
+
     if not course:
+        print(f"DEBUG: Course {course_id} not found.")
         return jsonify({"msg": "Course not found"}), 404
-    # Note: We are allowing any logged-in user to generate a study guide, not just the user.
-    # You could add `if course.user_id != current_user_id:` to restrict it.
 
     try:
+        print(f"DEBUG: Calling get_all_text_for_course for course {course_id}...")
         full_text = rag_engine.get_all_text_for_course(course.documents)
+        print(f"DEBUG: Finished get_all_text_for_course. Full text length: {len(full_text) if full_text else 0}")
+
         if not full_text or not full_text.strip():
+            print(f"DEBUG: No content found for course {course_id} to generate a study guide.")
             return Response("No content found for this course to generate a study guide.", status=404, mimetype='text/plain')
 
+        print(f"DEBUG: Calling generate_study_guide_from_text for course {course_id}...")
         # Use the new function from rag_engine to handle streaming
         stream = rag_engine.generate_study_guide_from_text(full_text)
+        print(f"DEBUG: Finished generate_study_guide_from_text for course {course_id}. Returning response.")
         
         return Response(stream_with_context(stream), mimetype='text/plain')
 
     except Exception as e:
-        print(f"Error generating study guide for course {course_id}: {e}")
-        # Log the full error for debugging
+        print(f"ERROR: Exception in generate_study_guide route for course {course_id}: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({"msg": "An error occurred while generating the study guide."}), 500
@@ -729,7 +740,7 @@ def generate_study_guide(course_id):
 @app.route('/notes', methods=['POST'])
 @jwt_required()
 def create_note():
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
     data = request.get_json()
     title = data.get('title')
     content = data.get('content')
@@ -752,20 +763,20 @@ def create_note():
 @app.route('/courses/<int:course_id>/notes', methods=['GET'])
 @jwt_required()
 def get_notes_for_course(course_id):
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
     notes = Note.query.filter_by(course_id=course_id, user_id=current_user_id).all()
     return jsonify([{"id": n.id, "title": n.title, "content": n.content, "created_at": n.created_at} for n in notes]), 200
 
 @app.route('/notes/<int:note_id>', methods=['PUT'])
 @jwt_required()
 def update_note(note_id):
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
     note = Note.query.get(note_id)
 
     if not note:
         return jsonify({"msg": "Note not found"}), 404
 
-    if str(note.user_id) != str(current_user_id):
+    if note.user_id != current_user_id:
         return jsonify({"msg": "Unauthorized"}), 403
 
     data = request.get_json()
@@ -778,13 +789,13 @@ def update_note(note_id):
 @app.route('/notes/<int:note_id>', methods=['DELETE'])
 @jwt_required()
 def delete_note(note_id):
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
     note = Note.query.get(note_id)
 
     if not note:
         return jsonify({"msg": "Note not found"}), 404
 
-    if str(note.user_id) != str(current_user_id):
+    if note.user_id != current_user_id:
         return jsonify({"msg": "Unauthorized"}), 403
 
     db.session.delete(note)
@@ -795,7 +806,7 @@ def delete_note(note_id):
 @app.route('/notifications', methods=['GET'])
 @jwt_required()
 def get_notifications():
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
     notifications = Notification.query.filter_by(user_id=current_user_id).order_by(Notification.created_at.desc()).all()
     return jsonify([
         {
@@ -811,7 +822,7 @@ def get_notifications():
 @app.route('/notifications/<int:notification_id>/read', methods=['PUT'])
 @jwt_required()
 def mark_notification_read(notification_id):
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
     notification = Notification.query.get(notification_id)
 
     if not notification:
@@ -829,7 +840,7 @@ def mark_notification_read(notification_id):
 @app.route('/notifications/<int:notification_id>', methods=['DELETE'])
 @jwt_required()
 def delete_notification(notification_id):
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
     notification = Notification.query.get(notification_id)
 
     if not notification:
@@ -847,7 +858,7 @@ def delete_notification(notification_id):
 @app.route('/notifications', methods=['DELETE'])
 @jwt_required()
 def delete_all_notifications():
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
     
     try:
         num_deleted = Notification.query.filter_by(user_id=current_user_id).delete()
