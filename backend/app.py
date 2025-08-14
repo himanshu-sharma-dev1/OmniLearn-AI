@@ -75,6 +75,7 @@ class Course(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     user = db.relationship('User', backref=db.backref('courses', lazy=True))
     documents = db.relationship('Document', backref='course', lazy=True, cascade="all, delete-orphan")
+    chat_messages = db.relationship('ChatMessage', backref='course', lazy=True, cascade="all, delete-orphan")
 
 class Document(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -118,6 +119,14 @@ class QuizQuestionResponse(db.Model):
     selected_option = db.Column(db.String(200), nullable=False)
     correct_option = db.Column(db.String(200), nullable=False)
     is_correct = db.Column(db.Boolean, nullable=False)
+
+class ChatMessage(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    course_id = db.Column(db.Integer, db.ForeignKey('course.id', ondelete='CASCADE'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    sender = db.Column(db.String(50), nullable=False)  # 'user' or 'ai'
+    message = db.Column(db.Text, nullable=False)
+    timestamp = db.Column(db.DateTime, server_default=db.func.now())
 
 def create_notification(user_id, message, type, course_id=None):
     new_notification = Notification(
@@ -459,6 +468,7 @@ def add_source(course_id):
 @app.route('/courses/<int:course_id>/chat', methods=['POST'])
 @jwt_required()
 def chat_with_course(course_id):
+    current_user_id = int(get_jwt_identity())
     data = request.get_json()
     question = data.get('question')
     document_ids = data.get('document_ids') # Optional list of document IDs
@@ -470,6 +480,9 @@ def chat_with_course(course_id):
     if not course:
         return jsonify({"msg": "Course not found"}), 404
 
+    if course.user_id != current_user_id:
+        return jsonify({"msg": "Unauthorized"}), 403
+
     # Filter documents if specific IDs are provided
     documents_to_search = course.documents
     if document_ids:
@@ -478,10 +491,54 @@ def chat_with_course(course_id):
     answer_data = rag_engine.query_rag(question, course_id, documents_to_search)
     
     if "answer" in answer_data and "sources" in answer_data:
+        # Save user's question
+        user_message = ChatMessage(
+            course_id=course_id,
+            user_id=current_user_id,
+            sender='user',
+            message=question
+        )
+        db.session.add(user_message)
+
+        # Save AI's answer
+        ai_message = ChatMessage(
+            course_id=course_id,
+            user_id=current_user_id,
+            sender='ai',
+            message=answer_data["answer"]
+        )
+        db.session.add(ai_message)
+
+        db.session.commit()
+
         return jsonify({"answer": answer_data["answer"], "sources": answer_data["sources"]}), 200
     else:
         # This case should ideally not be hit if rag_engine.query_rag always returns expected format
         return jsonify({"answer": "An unexpected error occurred in RAG engine.", "sources": []}), 500
+
+
+@app.route('/courses/<int:course_id>/history', methods=['GET'])
+@jwt_required()
+def get_chat_history(course_id):
+    current_user_id = int(get_jwt_identity())
+
+    # Optional: Check if user has access to the course
+    course = Course.query.get_or_404(course_id)
+    if course.user_id != current_user_id:
+        return jsonify({"msg": "Unauthorized"}), 403
+
+    messages = ChatMessage.query.filter_by(course_id=course_id, user_id=current_user_id).order_by(ChatMessage.timestamp.asc()).all()
+
+    history_data = [
+        {
+            "id": msg.id,
+            "sender": msg.sender,
+            "message": msg.message,
+            "timestamp": msg.timestamp.isoformat()
+        } for msg in messages
+    ]
+
+    return jsonify(history_data), 200
 
 
 @app.route('/courses/<int:course_id>/search', methods=['GET'])
