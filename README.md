@@ -1,6 +1,7 @@
 # Intelli-Tutor: Your Personal AI-Powered Study Companion
 
 <p align="center">
+  <a href="https://omnilearn-frontend-wandering-rain-4082.fly.dev/" target="_blank"><img src="https://img.shields.io/badge/View_Live_Site-brightgreen?style=for-the-badge&logo=rocket&logoColor=white" alt="View Live Site"/></a>
   <img src="https://img.shields.io/badge/React-61DAFB?style=for-the-badge&logo=react&logoColor=black" alt="React"/>
   <img src="https://img.shields.io/badge/Vite-646CFF?style=for-the-badge&logo=vite&logoColor=white" alt="Vite"/>
   <img src="https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white" alt="Tailwind CSS"/>
