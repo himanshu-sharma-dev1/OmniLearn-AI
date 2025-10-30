@@ -12,6 +12,9 @@
 
 Intelli-Tutor is a sophisticated, full-stack web application engineered to provide a personalized, AI-driven learning environment. It transforms static documents into a dynamic and interactive knowledge base, empowering students and lifelong learners to study more effectively.
 
+## 🚀 Live Demo
+
+**[Click here to view the live application!](https://omnilearn-frontend-wandering-rain-4082.fly.dev/)**
 ---
 
 ## ✅ Core Capabilities
