@@ -1,0 +1,40 @@
+# Lightweight requirements for DigitalOcean Droplet ($6/mo, 1GB RAM)
+# Does NOT include Whisper or PyTorch (too memory-intensive)
+# YouTube transcription uses youtube-transcript-api instead of Whisper
+
+# Core Flask
+Flask
+Flask-SQLAlchemy
+Flask-JWT-Extended
+Flask-Cors
+Flask-Limiter
+Flask-Migrate
+Flask-Mail
+
+# Database
+psycopg[binary]
+
+# Document Processing
+PyPDF2
+trafilatura
+youtube-transcript-api
+yt-dlp
+
+# AI/ML (Lightweight)
+google-generativeai
+langchain
+sentence-transformers  # ~200MB RAM for embeddings
+numpy
+scikit-learn
+
+# Security & Utils
+python-dotenv
+werkzeug
+bleach
+authlib
+
+# PDF Export
+reportlab
+
+# Production Server
+gunicorn
