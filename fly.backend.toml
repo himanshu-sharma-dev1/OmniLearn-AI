@@ -9,6 +9,7 @@ primary_region = "sin"
 [env]
   FLASK_APP = "backend.app"
   FRONTEND_URL = "https://omnilearn-frontend-wandering-rain-4082.fly.dev"
+  DATA_DIR = "/app/data"
 
 [http_service]
   internal_port = 5000

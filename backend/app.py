@@ -1,14 +1,20 @@
 # backend/app.py
 import os
+import json
 import secrets
+import logging
+import bleach
+from functools import wraps
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, Response, stream_with_context, send_from_directory
+from flask import Flask, request, jsonify, Response, stream_with_context, send_from_directory, redirect
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import JSON
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, JWTManager
 from flask_cors import CORS
 from flask_migrate import Migrate
 from flask_mail import Mail, Message
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
@@ -18,8 +24,12 @@ from dotenv import load_dotenv
 
 load_dotenv(override=False)
 
+# --- Logging Setup ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*", "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"], "allow_headers": ["Content-Type", "Authorization"]}})
 
 # --- Configuration ---
 instance_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance')
@@ -33,7 +43,10 @@ else:
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JWT_SECRET_KEY'] = str(os.environ.get('JWT_SECRET_KEY', 'super-secret-key-for-intelli-tutor'))
-app.config['UPLOAD_FOLDER'] = os.path.join('/app/data', 'uploads')
+app.config['SECRET_KEY'] = str(os.environ.get('JWT_SECRET_KEY', 'super-secret-key-for-intelli-tutor'))  # For Flask session (OAuth)
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+DATA_DIR = os.environ.get('DATA_DIR', os.path.join(BASE_DIR, 'data'))
+app.config['UPLOAD_FOLDER'] = os.path.join(DATA_DIR, 'uploads')
 app.config['MAIL_SERVER'] = os.environ.get('MAIL_SERVER')
 app.config['MAIL_PORT'] = int(os.environ.get('MAIL_PORT', 587))
 app.config['MAIL_USE_TLS'] = os.environ.get('MAIL_USE_TLS', 'true').lower() in ['true', 'on', '1']
@@ -49,6 +62,60 @@ db = SQLAlchemy(app)
 migrate = Migrate(app, db)
 jwt = JWTManager(app)
 mail = Mail(app)
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "100 per hour"],
+    storage_uri="memory://"
+)
+
+# --- Google OAuth Configuration ---
+from authlib.integrations.flask_client import OAuth
+
+oauth = OAuth(app)
+google = oauth.register(
+    name='google',
+    client_id=os.environ.get('GOOGLE_CLIENT_ID'),
+    client_secret=os.environ.get('GOOGLE_CLIENT_SECRET'),
+    server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+    client_kwargs={
+        'scope': 'openid email profile'
+    }
+)
+
+FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
+
+
+# --- Error Codes ---
+class ErrorCode:
+    VALIDATION_ERROR = "VALIDATION_ERROR"
+    NOT_FOUND = "NOT_FOUND"
+    AUTH_ERROR = "AUTH_ERROR"
+    PROCESSING_ERROR = "PROCESSING_ERROR"
+    RATE_LIMIT_ERROR = "RATE_LIMIT_ERROR"
+    SERVER_ERROR = "SERVER_ERROR"
+
+def api_error(message, code, status=400, details=None):
+    """Standard error response format"""
+    response = {"error": message, "code": code}
+    if details:
+        response["details"] = details
+    return jsonify(response), status
+
+def sanitize_input(text):
+    """Sanitize user input to prevent XSS"""
+    if text is None:
+        return None
+    return bleach.clean(str(text), strip=True)
+
+def validate_pdf_file(filepath):
+    """Validate PDF by checking magic bytes"""
+    try:
+        with open(filepath, 'rb') as f:
+            header = f.read(5)
+            return header == b'%PDF-'
+    except Exception:
+        return False
 
 # --- Database Models ---
 class User(db.Model):
@@ -59,7 +126,8 @@ class User(db.Model):
     avatar = db.Column(db.String(300), nullable=True)
     notification_preferences = db.Column(JSON, nullable=True)
     email = db.Column(db.String(120), unique=True, nullable=False)
-    password_hash = db.Column(db.String(256), nullable=False)
+    password_hash = db.Column(db.String(256), nullable=True)  # Nullable for Google OAuth users
+    google_id = db.Column(db.String(256), nullable=True, unique=True)  # Google OAuth ID
     reset_token = db.Column(db.String(128), nullable=True)
     reset_token_expiration = db.Column(db.DateTime, nullable=True)
 
@@ -80,11 +148,14 @@ class Document(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     filename = db.Column(db.String(150), nullable=False) # For PDF, the original filename; for URL, the title
     filepath = db.Column(db.String(300), nullable=True) # Nullable for URL-based documents
-    vector_store_path = db.Column(db.String(300), nullable=False)
+    vector_store_path = db.Column(db.String(300), nullable=True)  # Nullable until processing complete
     uploaded_at = db.Column(db.DateTime, server_default=db.func.now())
     course_id = db.Column(db.Integer, db.ForeignKey('course.id'), nullable=False)
     source_type = db.Column(db.String(50), nullable=False, default='pdf') # 'pdf', 'url', 'youtube'
     source_url = db.Column(db.String(500), nullable=True)
+    # Processing status: 'pending', 'processing', 'ready', 'error'
+    processing_status = db.Column(db.String(20), nullable=False, default='pending')
+    error_message = db.Column(db.Text, nullable=True)
 
 class Note(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -119,6 +190,75 @@ class QuizQuestionResponse(db.Model):
     correct_option = db.Column(db.String(200), nullable=False)
     is_correct = db.Column(db.Boolean, nullable=False)
 
+# --- New Models for Chat History & Flashcards ---
+
+class ChatMessage(db.Model):
+    """Stores chat messages for conversation history"""
+    id = db.Column(db.Integer, primary_key=True)
+    course_id = db.Column(db.Integer, db.ForeignKey('course.id', ondelete='CASCADE'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    role = db.Column(db.String(20), nullable=False)  # 'user' or 'assistant'
+    content = db.Column(db.Text, nullable=False)
+    sources = db.Column(JSON, nullable=True)  # For AI messages with citations
+    created_at = db.Column(db.DateTime, server_default=db.func.now())
+
+class FlashcardDeck(db.Model):
+    """A collection of flashcards for a course"""
+    id = db.Column(db.Integer, primary_key=True)
+    course_id = db.Column(db.Integer, db.ForeignKey('course.id', ondelete='CASCADE'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    name = db.Column(db.String(150), nullable=False)
+    created_at = db.Column(db.DateTime, server_default=db.func.now())
+    cards = db.relationship('Flashcard', backref='deck', lazy=True, cascade="all, delete-orphan")
+
+class Flashcard(db.Model):
+    """Individual flashcard with spaced repetition (SM-2) fields"""
+    id = db.Column(db.Integer, primary_key=True)
+    deck_id = db.Column(db.Integer, db.ForeignKey('flashcard_deck.id', ondelete='CASCADE'), nullable=False)
+    front = db.Column(db.Text, nullable=False)  # Question side
+    back = db.Column(db.Text, nullable=False)   # Answer side
+    source_info = db.Column(db.Text, nullable=True)  # JSON with source document and page
+    # SM-2 Spaced Repetition fields
+    ease_factor = db.Column(db.Float, default=2.5)
+    interval = db.Column(db.Integer, default=1)  # Days until next review
+    repetitions = db.Column(db.Integer, default=0)
+    next_review = db.Column(db.DateTime, nullable=True)
+    last_reviewed = db.Column(db.DateTime, nullable=True)
+
+
+class StudySession(db.Model):
+    """Tracks study time per course for analytics"""
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    course_id = db.Column(db.Integer, db.ForeignKey('course.id', ondelete='CASCADE'), nullable=False)
+    start_time = db.Column(db.DateTime, nullable=False)
+    end_time = db.Column(db.DateTime, nullable=True)
+    duration_seconds = db.Column(db.Integer, default=0)  # Total seconds studied
+    activity_type = db.Column(db.String(50), default='chat')  # 'chat', 'quiz', 'flashcards', 'study_guide'
+    created_at = db.Column(db.DateTime, server_default=db.func.now())
+
+class CourseShare(db.Model):
+    """Shareable links for courses"""
+    id = db.Column(db.Integer, primary_key=True)
+    course_id = db.Column(db.Integer, db.ForeignKey('course.id', ondelete='CASCADE'), nullable=False)
+    created_by = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    share_token = db.Column(db.String(64), unique=True, nullable=False)  # Unique share token
+    permission = db.Column(db.String(20), default='read')  # 'read' or 'edit'
+    expires_at = db.Column(db.DateTime, nullable=True)  # Optional expiration
+    access_count = db.Column(db.Integer, default=0)  # Track how many times accessed
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, server_default=db.func.now())
+
+class CourseGlossary(db.Model):
+    """Auto-extracted glossary terms for a course"""
+    id = db.Column(db.Integer, primary_key=True)
+    course_id = db.Column(db.Integer, db.ForeignKey('course.id', ondelete='CASCADE'), nullable=False)
+    term = db.Column(db.String(200), nullable=False)
+    definition = db.Column(db.Text, nullable=False)
+    related_terms = db.Column(JSON, nullable=True)  # List of related term strings
+    source_document = db.Column(db.String(200), nullable=True)  # Which doc it came from
+    created_at = db.Column(db.DateTime, server_default=db.func.now())
+
 def create_notification(user_id, message, type, course_id=None):
     new_notification = Notification(
         user_id=user_id,
@@ -137,27 +277,36 @@ def init_db_command():
         db.create_all()
     print("Initialized the database.")
 
+# --- Health Check Endpoint (for Docker) ---
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint for Docker/Kubernetes."""
+    return jsonify({"status": "healthy", "service": "intelli-tutor-backend"}), 200
+
 # --- API Endpoints ---
 @app.route('/register', methods=['POST'])
+@limiter.limit("5 per minute")
 def register():
     data = request.get_json()
-    email = data.get('email')
+    email = sanitize_input(data.get('email'))
     password = data.get('password')
 
     if not email or not password:
-        return jsonify({"msg": "Email and password are required"}), 400
+        return api_error("Email and password are required", ErrorCode.VALIDATION_ERROR)
 
     if User.query.filter_by(email=email).first():
-        return jsonify({"msg": "Email already registered"}), 409
+        return api_error("Email already registered", ErrorCode.VALIDATION_ERROR, 409)
 
     new_user = User(email=email)
     new_user.set_password(password)
     db.session.add(new_user)
     db.session.commit()
+    logger.info(f"New user registered: {email}")
 
     return jsonify({"msg": "User registered successfully"}), 201
 
 @app.route('/login', methods=['POST'])
+@limiter.limit("5 per minute")
 def login():
     data = request.get_json()
     email = data.get('email')
@@ -165,12 +314,80 @@ def login():
 
     user = User.query.filter_by(email=email).first()
 
-    if user and user.check_password(password):
+    if user and user.password_hash and user.check_password(password):
         print(f"User ID for token: {user.id}, type: {type(user.id)}")
         access_token = create_access_token(identity=str(user.id))
         return jsonify(access_token=access_token), 200
 
     return jsonify({"msg": "Bad email or password"}), 401
+
+
+# --- Google OAuth Endpoints ---
+
+@app.route('/auth/google')
+def google_login():
+    """Redirect to Google OAuth login"""
+    # Get the callback URL based on environment
+    callback_url = request.url_root.rstrip('/') + '/auth/google/callback'
+    return google.authorize_redirect(callback_url)
+
+
+@app.route('/auth/google/callback')
+def google_callback():
+    """Handle Google OAuth callback"""
+    try:
+        token = google.authorize_access_token()
+        user_info = token.get('userinfo')
+        
+        if not user_info:
+            # Fallback: fetch user info manually
+            resp = google.get('https://www.googleapis.com/oauth2/v3/userinfo')
+            user_info = resp.json()
+        
+        google_id = user_info.get('sub')
+        email = user_info.get('email')
+        first_name = user_info.get('given_name', '')
+        last_name = user_info.get('family_name', '')
+        picture = user_info.get('picture', '')
+        
+        if not email:
+            return redirect(f"{FRONTEND_URL}/login?error=no_email")
+        
+        # Check if user exists by google_id or email
+        user = User.query.filter_by(google_id=google_id).first()
+        if not user:
+            user = User.query.filter_by(email=email).first()
+        
+        if user:
+            # Update google_id if not set (existing email user now using Google)
+            if not user.google_id:
+                user.google_id = google_id
+            # Update avatar if not set
+            if not user.avatar and picture:
+                user.avatar = picture
+            db.session.commit()
+        else:
+            # Create new user
+            user = User(
+                email=email,
+                google_id=google_id,
+                first_name=first_name,
+                last_name=last_name,
+                avatar=picture,
+                password_hash=None  # No password for Google-only users
+            )
+            db.session.add(user)
+            db.session.commit()
+        
+        # Generate JWT token
+        access_token = create_access_token(identity=str(user.id))
+        
+        # Redirect to frontend with token
+        return redirect(f"{FRONTEND_URL}/auth/callback?token={access_token}")
+        
+    except Exception as e:
+        logger.error(f"Google OAuth error: {str(e)}")
+        return redirect(f"{FRONTEND_URL}/login?error=oauth_failed")
 
 
 @app.route('/forgot-password', methods=['POST'])
@@ -187,7 +404,7 @@ def forgot_password():
 
         # Generate the reset URL using an environment variable for flexibility
         with app.app_context():
-            frontend_url = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
+            frontend_url = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
             reset_url = f"{frontend_url}/reset-password/{token}"
 
         msg = Message(
@@ -459,29 +676,90 @@ def add_source(course_id):
 @app.route('/courses/<int:course_id>/chat', methods=['POST'])
 @jwt_required()
 def chat_with_course(course_id):
+    current_user_id = int(get_jwt_identity())
     data = request.get_json()
-    question = data.get('question')
+    question = sanitize_input(data.get('question'))
     document_ids = data.get('document_ids') # Optional list of document IDs
+    stream = data.get('stream', False)  # Enable streaming if requested
 
     if not question:
-        return jsonify({"msg": "Question is required"}), 400
+        return api_error("Question is required", ErrorCode.VALIDATION_ERROR)
 
-    course = Course.query.get(course_id)
+    course = Course.query.filter_by(id=course_id, user_id=current_user_id).first()
     if not course:
-        return jsonify({"msg": "Course not found"}), 404
+        return api_error("Course not found", ErrorCode.NOT_FOUND, 404)
 
-    # Filter documents if specific IDs are provided
-    documents_to_search = course.documents
+    # Filter documents that have vector stores (ready for querying)
+    documents_to_search = [d for d in course.documents if d.vector_store_path]
     if document_ids:
-        documents_to_search = [doc for doc in course.documents if doc.id in document_ids]
+        documents_to_search = [doc for doc in documents_to_search if doc.id in document_ids]
 
-    answer_data = rag_engine.query_rag(question, course_id, documents_to_search)
+    if not documents_to_search:
+        return api_error("No processed documents available for chat", ErrorCode.PROCESSING_ERROR)
+
+    # Save user message
+    user_message = ChatMessage(
+        course_id=course_id,
+        user_id=current_user_id,
+        role='user',
+        content=question
+    )
+    db.session.add(user_message)
     
-    if "answer" in answer_data and "sources" in answer_data:
+    # If streaming requested, use SSE
+    if stream:
+        # Commit user message first before streaming
+        db.session.commit()
+        
+        # Extract document data before generator to avoid SQLAlchemy detached object issues
+        docs_data = [{
+            'id': d.id,
+            'filename': d.filename,
+            'vector_store_path': d.vector_store_path
+        } for d in documents_to_search]
+        
+        def generate():
+            try:
+                for chunk_data in rag_engine.query_rag_stream(question, course_id, docs_data):
+                    if isinstance(chunk_data, dict):
+                        # Final response with sources
+                        sources = chunk_data.get('sources', [])
+                        yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
+                    else:
+                        # Text chunk
+                        yield f"data: {json.dumps({'type': 'chunk', 'content': chunk_data})}\n\n"
+                
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            except Exception as e:
+                logger.error(f"Streaming chat error: {str(e)}")
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        
+        return Response(generate(), mimetype='text/event-stream', headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'
+        })
+    
+    # Non-streaming response
+    try:
+        answer_data = rag_engine.query_rag(question, course_id, documents_to_search)
+        
+        # Save AI message
+        ai_message = ChatMessage(
+            course_id=course_id,
+            user_id=current_user_id,
+            role='assistant',
+            content=answer_data.get("answer", ""),
+            sources=answer_data.get("sources", [])
+        )
+        db.session.add(ai_message)
+        db.session.commit()
+        
         return jsonify({"answer": answer_data["answer"], "sources": answer_data["sources"]}), 200
-    else:
-        # This case should ideally not be hit if rag_engine.query_rag always returns expected format
-        return jsonify({"answer": "An unexpected error occurred in RAG engine.", "sources": []}), 500
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Chat error: {str(e)}")
+        return api_error("Failed to process chat", ErrorCode.PROCESSING_ERROR, 500)
 
 
 @app.route('/courses/<int:course_id>/search', methods=['GET'])
@@ -615,8 +893,32 @@ def generate_quiz(course_id):
         return jsonify({"msg": "Course not found"}), 404
 
     try:
-        # We pass all documents to the quiz generation engine
-        quiz_data = rag_engine.generate_quiz_from_docs(course.documents)
+        # Get optional parameters from request body
+        data = request.get_json() or {}
+        difficulty = data.get('difficulty', 'medium')  # easy, medium, hard
+        count = data.get('count', 5)  # 5, 10, 15, 20
+        # Question types: mcq, true_false, fill_blank (no short_answer/essay by default)
+        question_types = data.get('question_types', ['mcq', 'true_false', 'fill_blank'])
+        
+        # Validate parameters
+        if difficulty not in ['easy', 'medium', 'hard']:
+            difficulty = 'medium'
+        if count not in [5, 10, 15, 20]:
+            count = 5
+        
+        # Validate question types
+        valid_types = ['mcq', 'true_false', 'fill_blank']
+        question_types = [t for t in question_types if t in valid_types]
+        if not question_types:
+            question_types = ['mcq']  # Default to MCQ only
+        
+        # Pass parameters to quiz generation engine
+        quiz_data = rag_engine.generate_quiz_from_docs(
+            course.documents, 
+            difficulty=difficulty, 
+            count=count,
+            question_types=question_types
+        )
         
         if "error" in quiz_data:
             create_notification(current_user_id, f"Failed to generate quiz for Course '{course.name}': {quiz_data['error']}", "error", course_id)
@@ -674,6 +976,45 @@ def submit_quiz(course_id):
         "attempt_id": new_attempt.id,
         "score": new_attempt.score
     }), 201
+
+
+@app.route('/courses/<int:course_id>/mind-map', methods=['POST'])
+@jwt_required()
+def generate_mind_map(course_id):
+    """Generate a mind map from course documents."""
+    current_user_id = int(get_jwt_identity())
+    data = request.get_json() or {}
+    topic = data.get('topic')  # Optional topic to focus on
+    
+    course = Course.query.filter_by(id=course_id, user_id=current_user_id).first()
+    if not course:
+        return api_error("Course not found", ErrorCode.NOT_FOUND, 404)
+    
+    # Get documents with vector stores
+    documents_to_use = [d for d in course.documents if d.vector_store_path]
+    
+    if not documents_to_use:
+        return api_error("No processed documents available", ErrorCode.PROCESSING_ERROR)
+    
+    try:
+        # Extract document data to avoid SQLAlchemy detached object issues
+        docs_data = [{
+            'id': d.id,
+            'filename': d.filename,
+            'vector_store_path': d.vector_store_path
+        } for d in documents_to_use]
+        
+        mind_map_data = rag_engine.generate_mind_map(docs_data, topic=topic)
+        
+        return jsonify({
+            "nodes": mind_map_data.get("nodes", []),
+            "edges": mind_map_data.get("edges", []),
+            "central_topic": mind_map_data.get("central_topic", "Mind Map"),
+            "course_name": course.name
+        }), 200
+    except Exception as e:
+        logger.error(f"Mind map generation error: {str(e)}")
+        return api_error("Failed to generate mind map", ErrorCode.PROCESSING_ERROR, 500)
 
 
 @app.route('/courses/<int:course_id>/quizzes/history', methods=['GET'])
@@ -872,6 +1213,1236 @@ def delete_all_notifications():
 @app.route('/uploads/<path:filename>')
 def serve_upload(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
+
+# --- Chat History Endpoints ---
+
+@app.route('/courses/<int:course_id>/chat-history', methods=['GET'])
+@jwt_required()
+def get_chat_history(course_id):
+    """Get chat history for a course"""
+    current_user_id = int(get_jwt_identity())
+    course = Course.query.filter_by(id=course_id, user_id=current_user_id).first()
+    
+    if not course:
+        return api_error("Course not found", ErrorCode.NOT_FOUND, 404)
+    
+    messages = ChatMessage.query.filter_by(
+        course_id=course_id, 
+        user_id=current_user_id
+    ).order_by(ChatMessage.created_at.asc()).all()
+    
+    return jsonify([{
+        "id": msg.id,
+        "role": msg.role,
+        "content": msg.content,
+        "sources": msg.sources,
+        "created_at": msg.created_at.isoformat()
+    } for msg in messages]), 200
+
+@app.route('/courses/<int:course_id>/chat-history', methods=['DELETE'])
+@jwt_required()
+def clear_chat_history(course_id):
+    """Clear chat history for a course"""
+    current_user_id = int(get_jwt_identity())
+    course = Course.query.filter_by(id=course_id, user_id=current_user_id).first()
+    
+    if not course:
+        return api_error("Course not found", ErrorCode.NOT_FOUND, 404)
+    
+    num_deleted = ChatMessage.query.filter_by(
+        course_id=course_id, 
+        user_id=current_user_id
+    ).delete()
+    db.session.commit()
+    
+    return jsonify({"msg": f"Cleared {num_deleted} messages"}), 200
+
+
+# --- Flashcard Endpoints ---
+
+@app.route('/courses/<int:course_id>/generate-flashcards', methods=['POST'])
+@jwt_required()
+def generate_flashcards(course_id):
+    """Generate flashcards using AI from course documents"""
+    current_user_id = int(get_jwt_identity())
+    course = Course.query.filter_by(id=course_id, user_id=current_user_id).first()
+    
+    if not course:
+        return api_error("Course not found", ErrorCode.NOT_FOUND, 404)
+    
+    if not course.documents:
+        return api_error("No documents in course", ErrorCode.VALIDATION_ERROR)
+    
+    data = request.get_json() or {}
+    count = min(data.get('count', 10), 30)  # Max 30 cards
+    topic = data.get('topic')  # Optional focus topic
+    
+    try:
+        # Get documents with vector stores
+        documents_to_use = [d for d in course.documents if d.vector_store_path]
+        
+        if not documents_to_use:
+            return api_error("No processed documents available", ErrorCode.PROCESSING_ERROR)
+        
+        # Extract document data for rag_engine
+        document_data = [{
+            'id': d.id,
+            'filename': d.filename,
+            'vector_store_path': d.vector_store_path
+        } for d in documents_to_use]
+        
+        # Generate flashcards using AI (now with source citations and difficulty)
+        difficulty = data.get('difficulty', 'medium')
+        if difficulty not in ['easy', 'medium', 'hard']:
+            difficulty = 'medium'
+        flashcard_data = rag_engine.generate_flashcards(document_data, count, topic=topic, difficulty=difficulty)
+        
+        # Create deck
+        deck_name = f"Flashcards ({difficulty.title()}): {topic}" if topic else f"Flashcards ({difficulty.title()}) for {course.name}"
+        deck = FlashcardDeck(
+            course_id=course_id,
+            user_id=current_user_id,
+            name=deck_name
+        )
+        db.session.add(deck)
+        db.session.flush()
+        
+        # Create cards with source info stored in a metadata field (JSON)
+        for card in flashcard_data:
+            source_info = json.dumps({
+                'source': card.get('source', 'Unknown'),
+                'page': card.get('page')
+            })
+            flashcard = Flashcard(
+                deck_id=deck.id,
+                front=card.get('front', ''),
+                back=card.get('back', ''),
+                next_review=datetime.utcnow()
+            )
+            # Store source in the existing model (we'll add to response)
+            flashcard.source_info = source_info  # This will be handled dynamically
+            db.session.add(flashcard)
+        
+        db.session.commit()
+        
+        create_notification(
+            current_user_id,
+            f"Generated {len(flashcard_data)} flashcards for '{course.name}'",
+            'success',
+            course_id
+        )
+        
+        return jsonify({
+            "deck_id": deck.id,
+            "count": len(flashcard_data),
+            "cards": flashcard_data,  # Return cards with source info
+            "msg": "Flashcards generated successfully"
+        }), 201
+        
+    except Exception as e:
+        logger.error(f"Flashcard generation error: {str(e)}")
+        return api_error("Failed to generate flashcards", ErrorCode.PROCESSING_ERROR, 500, {"detail": str(e)})
+
+
+@app.route('/flashcards/explain', methods=['POST'])
+@jwt_required()
+def explain_flashcard():
+    """Get a detailed explanation of a flashcard answer"""
+    current_user_id = int(get_jwt_identity())
+    data = request.get_json() or {}
+    
+    card_front = data.get('front')
+    card_back = data.get('back')
+    course_id = data.get('course_id')
+    
+    if not all([card_front, card_back, course_id]):
+        return api_error("Missing front, back, or course_id", ErrorCode.VALIDATION_ERROR)
+    
+    course = Course.query.filter_by(id=course_id, user_id=current_user_id).first()
+    if not course:
+        return api_error("Course not found", ErrorCode.NOT_FOUND, 404)
+    
+    # Get documents with vector stores
+    documents_to_use = [d for d in course.documents if d.vector_store_path]
+    document_data = [{
+        'id': d.id,
+        'filename': d.filename,
+        'vector_store_path': d.vector_store_path
+    } for d in documents_to_use]
+    
+    try:
+        explanation = rag_engine.explain_flashcard(card_front, card_back, document_data)
+        return jsonify({"explanation": explanation}), 200
+    except Exception as e:
+        logger.error(f"Flashcard explain error: {str(e)}")
+        return api_error("Failed to explain flashcard", ErrorCode.PROCESSING_ERROR, 500)
+
+
+@app.route('/flashcards/regenerate', methods=['POST'])
+@jwt_required()
+def regenerate_flashcard():
+    """Regenerate a single flashcard"""
+    current_user_id = int(get_jwt_identity())
+    data = request.get_json() or {}
+    
+    course_id = data.get('course_id')
+    existing_cards = data.get('existing_cards', [])
+    topic = data.get('topic')
+    
+    if not course_id:
+        return api_error("Missing course_id", ErrorCode.VALIDATION_ERROR)
+    
+    course = Course.query.filter_by(id=course_id, user_id=current_user_id).first()
+    if not course:
+        return api_error("Course not found", ErrorCode.NOT_FOUND, 404)
+    
+    # Get documents with vector stores
+    documents_to_use = [d for d in course.documents if d.vector_store_path]
+    document_data = [{
+        'id': d.id,
+        'filename': d.filename,
+        'vector_store_path': d.vector_store_path
+    } for d in documents_to_use]
+    
+    try:
+        new_card = rag_engine.regenerate_single_flashcard(existing_cards, document_data, topic=topic)
+        if new_card:
+            return jsonify({"card": new_card}), 200
+        else:
+            return api_error("Failed to generate new card", ErrorCode.PROCESSING_ERROR, 500)
+    except Exception as e:
+        logger.error(f"Flashcard regenerate error: {str(e)}")
+        return api_error("Failed to regenerate flashcard", ErrorCode.PROCESSING_ERROR, 500)
+
+
+
+@app.route('/courses/<int:course_id>/flashcards', methods=['GET'])
+@jwt_required()
+def get_flashcards(course_id):
+    """Get all flashcard decks and cards for a course"""
+    current_user_id = int(get_jwt_identity())
+    course = Course.query.filter_by(id=course_id, user_id=current_user_id).first()
+    
+    if not course:
+        return api_error("Course not found", ErrorCode.NOT_FOUND, 404)
+    
+    decks = FlashcardDeck.query.filter_by(course_id=course_id, user_id=current_user_id).all()
+    
+    result = []
+    for deck in decks:
+        cards_due = Flashcard.query.filter(
+            Flashcard.deck_id == deck.id,
+            (Flashcard.next_review <= datetime.utcnow()) | (Flashcard.next_review == None)
+        ).count()
+        
+        result.append({
+            "id": deck.id,
+            "name": deck.name,
+            "created_at": deck.created_at.isoformat(),
+            "total_cards": len(deck.cards),
+            "cards_due": cards_due,
+            "cards": [{
+                "id": card.id,
+                "front": card.front,
+                "back": card.back,
+                "ease_factor": card.ease_factor,
+                "interval": card.interval,
+                "repetitions": card.repetitions,
+                "next_review": card.next_review.isoformat() if card.next_review else None,
+                "last_reviewed": card.last_reviewed.isoformat() if card.last_reviewed else None,
+                "source": (json.loads(card.source_info).get('source') if card.source_info else None),
+                "page": (json.loads(card.source_info).get('page') if card.source_info else None)
+            } for card in deck.cards]
+        })
+    
+    return jsonify(result), 200
+
+@app.route('/flashcards/<int:card_id>/review', methods=['POST'])
+@jwt_required()
+def review_flashcard(card_id):
+    """Submit a flashcard review with SM-2 algorithm"""
+    current_user_id = int(get_jwt_identity())
+    card = Flashcard.query.get(card_id)
+    
+    if not card:
+        return api_error("Flashcard not found", ErrorCode.NOT_FOUND, 404)
+    
+    # Verify ownership through deck -> course
+    deck = FlashcardDeck.query.get(card.deck_id)
+    if not deck or deck.user_id != current_user_id:
+        return api_error("Unauthorized", ErrorCode.AUTH_ERROR, 403)
+    
+    data = request.get_json()
+    quality = data.get('quality', 3)  # 0-5 scale (0=forgot, 5=perfect)
+    quality = max(0, min(5, quality))
+    
+    # SM-2 Algorithm
+    if quality < 3:
+        # Failed - reset
+        card.repetitions = 0
+        card.interval = 1
+    else:
+        if card.repetitions == 0:
+            card.interval = 1
+        elif card.repetitions == 1:
+            card.interval = 6
+        else:
+            card.interval = round(card.interval * card.ease_factor)
+        
+        card.repetitions += 1
+    
+    # Update ease factor
+    card.ease_factor = max(1.3, card.ease_factor + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02)))
+    card.last_reviewed = datetime.utcnow()
+    card.next_review = datetime.utcnow() + timedelta(days=card.interval)
+    
+    db.session.commit()
+    
+    return jsonify({
+        "card_id": card.id,
+        "next_review": card.next_review.isoformat(),
+        "interval": card.interval,
+        "ease_factor": card.ease_factor
+    }), 200
+
+
+@app.route('/flashcards/<int:card_id>', methods=['DELETE'])
+@jwt_required()
+def delete_flashcard(card_id):
+    """Delete a single flashcard"""
+    current_user_id = int(get_jwt_identity())
+    card = Flashcard.query.get(card_id)
+    
+    if not card:
+        return api_error("Flashcard not found", ErrorCode.NOT_FOUND, 404)
+    
+    # Verify ownership through deck -> user relationship
+    deck = FlashcardDeck.query.get(card.deck_id)
+    if not deck or deck.user_id != current_user_id:
+        return api_error("Unauthorized", ErrorCode.AUTH_ERROR, 403)
+    
+    db.session.delete(card)
+    db.session.commit()
+    
+    return jsonify({"msg": "Flashcard deleted successfully"}), 200
+
+
+@app.route('/flashcards/decks/<int:deck_id>', methods=['DELETE'])
+@jwt_required()
+def delete_flashcard_deck(deck_id):
+    """Delete an entire flashcard deck (cascades to all cards)"""
+    current_user_id = int(get_jwt_identity())
+    deck = FlashcardDeck.query.get(deck_id)
+    
+    if not deck:
+        return api_error("Deck not found", ErrorCode.NOT_FOUND, 404)
+    
+    if deck.user_id != current_user_id:
+        return api_error("Unauthorized", ErrorCode.AUTH_ERROR, 403)
+    
+    card_count = len(deck.cards)
+    db.session.delete(deck)  # Cascades to delete all cards due to relationship
+    db.session.commit()
+    
+    return jsonify({
+        "msg": f"Deck deleted with {card_count} cards"
+    }), 200
+
+
+@app.route('/flashcards/<int:card_id>', methods=['PUT'])
+@jwt_required()
+def update_flashcard(card_id):
+    """Edit a flashcard's front/back content"""
+    current_user_id = int(get_jwt_identity())
+    card = Flashcard.query.get(card_id)
+    
+    if not card:
+        return api_error("Flashcard not found", ErrorCode.NOT_FOUND, 404)
+    
+    # Verify ownership
+    deck = FlashcardDeck.query.get(card.deck_id)
+    if not deck or deck.user_id != current_user_id:
+        return api_error("Unauthorized", ErrorCode.AUTH_ERROR, 403)
+    
+    data = request.get_json() or {}
+    
+    if 'front' in data:
+        card.front = sanitize_input(data['front'])
+    if 'back' in data:
+        card.back = sanitize_input(data['back'])
+    
+    db.session.commit()
+    
+    return jsonify({
+        "msg": "Flashcard updated",
+        "card": {
+            "id": card.id,
+            "front": card.front,
+            "back": card.back
+        }
+    }), 200
+
+
+# --- Flashcard Export Endpoints ---
+
+@app.route('/flashcards/decks/<int:deck_id>/export/pdf', methods=['GET'])
+@jwt_required()
+def export_flashcards_pdf(deck_id):
+    """Export flashcard deck as styled PDF using ReportLab"""
+    from io import BytesIO
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.units import inch
+    
+    current_user_id = int(get_jwt_identity())
+    deck = FlashcardDeck.query.get(deck_id)
+    
+    if not deck:
+        return api_error("Deck not found", ErrorCode.NOT_FOUND, 404)
+    if deck.user_id != current_user_id:
+        return api_error("Unauthorized", ErrorCode.AUTH_ERROR, 403)
+    
+    try:
+        pdf_buffer = BytesIO()
+        doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, topMargin=0.5*inch, bottomMargin=0.5*inch)
+        
+        # Styles
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            'Title',
+            parent=styles['Heading1'],
+            fontSize=24,
+            textColor=colors.HexColor('#667eea'),
+            spaceAfter=20,
+            alignment=1  # center
+        )
+        subtitle_style = ParagraphStyle(
+            'Subtitle',
+            parent=styles['Normal'],
+            fontSize=12,
+            textColor=colors.gray,
+            spaceAfter=30,
+            alignment=1
+        )
+        question_style = ParagraphStyle(
+            'Question',
+            parent=styles['Normal'],
+            fontSize=11,
+            textColor=colors.HexColor('#1a1a1a'),
+            spaceAfter=5
+        )
+        answer_style = ParagraphStyle(
+            'Answer',
+            parent=styles['Normal'],
+            fontSize=10,
+            textColor=colors.HexColor('#333333')
+        )
+        
+        # Build content
+        story = []
+        
+        # Header
+        story.append(Paragraph(f"📚 {deck.name}", title_style))
+        story.append(Paragraph(f"{len(deck.cards)} Flashcards | Generated by Intelli-Tutor", subtitle_style))
+        story.append(Spacer(1, 20))
+        
+        # Cards
+        for i, card in enumerate(deck.cards, 1):
+            # Create a table for each card
+            card_data = [
+                [Paragraph(f"<b>Card {i}</b>", styles['Normal'])],
+                [Paragraph(f"<b>Q:</b> {card.front}", question_style)],
+                [Paragraph(f"<b>A:</b> {card.back}", answer_style)]
+            ]
+            
+            card_table = Table(card_data, colWidths=[6.5*inch])
+            card_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#667eea')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('BACKGROUND', (0, 1), (-1, 1), colors.HexColor('#f8f9fa')),
+                ('BACKGROUND', (0, 2), (-1, 2), colors.white),
+                ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#ddd')),
+                ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#eee')),
+                ('TOPPADDING', (0, 0), (-1, -1), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
+                ('LEFTPADDING', (0, 0), (-1, -1), 12),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 12),
+            ]))
+            
+            story.append(card_table)
+            story.append(Spacer(1, 15))
+        
+        # Footer
+        story.append(Spacer(1, 20))
+        footer_style = ParagraphStyle('Footer', parent=styles['Normal'], fontSize=9, textColor=colors.gray, alignment=1)
+        story.append(Paragraph(f"Created with Intelli-Tutor • {datetime.utcnow().strftime('%B %d, %Y')}", footer_style))
+        
+        # Build PDF
+        doc.build(story)
+        pdf_buffer.seek(0)
+        
+        from flask import send_file
+        return send_file(
+            pdf_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f"{deck.name.replace(' ', '_')}.pdf"
+        )
+    except Exception as e:
+        logger.error(f"PDF export error: {str(e)}")
+        return api_error(f"Failed to generate PDF: {str(e)}", ErrorCode.PROCESSING_ERROR, 500)
+
+
+@app.route('/flashcards/decks/<int:deck_id>/export/csv', methods=['GET'])
+@jwt_required()
+def export_flashcards_csv(deck_id):
+    """Export flashcard deck as CSV"""
+    import csv
+    from io import StringIO
+    
+    current_user_id = int(get_jwt_identity())
+    deck = FlashcardDeck.query.get(deck_id)
+    
+    if not deck:
+        return api_error("Deck not found", ErrorCode.NOT_FOUND, 404)
+    if deck.user_id != current_user_id:
+        return api_error("Unauthorized", ErrorCode.AUTH_ERROR, 403)
+    
+    # Create CSV
+    output = StringIO()
+    writer = csv.writer(output)
+    
+    # Header row
+    writer.writerow(['Front (Question)', 'Back (Answer)', 'Ease Factor', 'Interval (Days)', 'Next Review'])
+    
+    # Card rows
+    for card in deck.cards:
+        writer.writerow([
+            card.front,
+            card.back,
+            card.ease_factor,
+            card.interval,
+            card.next_review.isoformat() if card.next_review else 'Not scheduled'
+        ])
+    
+    output.seek(0)
+    
+    from flask import Response
+    return Response(
+        output.getvalue(),
+        mimetype='text/csv',
+        headers={
+            'Content-Disposition': f'attachment; filename={deck.name.replace(" ", "_")}.csv'
+        }
+    )
+
+
+# --- Chat History PDF Export ---
+
+@app.route('/courses/<int:course_id>/chat/export/pdf', methods=['GET'])
+@jwt_required()
+def export_chat_pdf(course_id):
+    """Export chat history as styled PDF"""
+    from io import BytesIO
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.units import inch
+    
+    current_user_id = int(get_jwt_identity())
+    course = Course.query.filter_by(id=course_id, user_id=current_user_id).first()
+    
+    if not course:
+        return api_error("Course not found", ErrorCode.NOT_FOUND, 404)
+    
+    # Get chat messages
+    messages = ChatMessage.query.filter_by(
+        course_id=course_id, 
+        user_id=current_user_id
+    ).order_by(ChatMessage.created_at.asc()).all()
+    
+    if not messages:
+        return api_error("No chat history to export", ErrorCode.NOT_FOUND, 404)
+    
+    try:
+        pdf_buffer = BytesIO()
+        doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, topMargin=0.5*inch, bottomMargin=0.5*inch)
+        
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            'Title', parent=styles['Heading1'],
+            fontSize=24, textColor=colors.HexColor('#667eea'),
+            spaceAfter=20, alignment=1
+        )
+        subtitle_style = ParagraphStyle(
+            'Subtitle', parent=styles['Normal'],
+            fontSize=12, textColor=colors.gray,
+            spaceAfter=30, alignment=1
+        )
+        user_style = ParagraphStyle(
+            'User', parent=styles['Normal'],
+            fontSize=11, textColor=colors.HexColor('#1a1a1a'),
+            leftIndent=10, spaceAfter=5
+        )
+        ai_style = ParagraphStyle(
+            'AI', parent=styles['Normal'],
+            fontSize=11, textColor=colors.HexColor('#333333'),
+            leftIndent=10, spaceAfter=5
+        )
+        
+        story = []
+        story.append(Paragraph(f"💬 Chat History: {course.name}", title_style))
+        story.append(Paragraph(f"{len(messages)} Messages | Exported from Intelli-Tutor", subtitle_style))
+        story.append(Spacer(1, 20))
+        
+        for msg in messages:
+            is_user = msg.sender == 'user'
+            msg_data = [[Paragraph(f"<b>{'You' if is_user else '🤖 AI'}</b>", styles['Normal'])],
+                        [Paragraph(msg.text[:1000] if len(msg.text) > 1000 else msg.text, user_style if is_user else ai_style)]]
+            
+            msg_table = Table(msg_data, colWidths=[6.5*inch])
+            msg_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#667eea') if is_user else colors.HexColor('#10b981')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('BACKGROUND', (0, 1), (-1, 1), colors.HexColor('#f8f9fa')),
+                ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#ddd')),
+                ('TOPPADDING', (0, 0), (-1, -1), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+                ('LEFTPADDING', (0, 0), (-1, -1), 10),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+            ]))
+            story.append(msg_table)
+            story.append(Spacer(1, 10))
+        
+        story.append(Spacer(1, 20))
+        footer_style = ParagraphStyle('Footer', parent=styles['Normal'], fontSize=9, textColor=colors.gray, alignment=1)
+        story.append(Paragraph(f"Exported from Intelli-Tutor • {datetime.utcnow().strftime('%B %d, %Y')}", footer_style))
+        
+        doc.build(story)
+        pdf_buffer.seek(0)
+        
+        from flask import send_file
+        return send_file(
+            pdf_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f"chat_{course.name.replace(' ', '_')}.pdf"
+        )
+    except Exception as e:
+        logger.error(f"Chat PDF export error: {str(e)}")
+        return api_error(f"Failed to generate PDF: {str(e)}", ErrorCode.PROCESSING_ERROR, 500)
+
+
+# --- Study Guide PDF Export ---
+
+@app.route('/courses/<int:course_id>/study-guide/export/pdf', methods=['POST'])
+@jwt_required()
+def export_study_guide_pdf(course_id):
+    """Export study guide content as styled PDF"""
+    from io import BytesIO
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    from reportlab.lib.units import inch
+    
+    current_user_id = int(get_jwt_identity())
+    course = Course.query.filter_by(id=course_id, user_id=current_user_id).first()
+    
+    if not course:
+        return api_error("Course not found", ErrorCode.NOT_FOUND, 404)
+    
+    data = request.get_json() or {}
+    content = data.get('content', '')
+    
+    if not content:
+        return api_error("No content provided", ErrorCode.VALIDATION_ERROR, 400)
+    
+    try:
+        pdf_buffer = BytesIO()
+        doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, topMargin=0.5*inch, bottomMargin=0.5*inch)
+        
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            'Title', parent=styles['Heading1'],
+            fontSize=24, textColor=colors.HexColor('#667eea'),
+            spaceAfter=20, alignment=1
+        )
+        subtitle_style = ParagraphStyle(
+            'Subtitle', parent=styles['Normal'],
+            fontSize=12, textColor=colors.gray,
+            spaceAfter=30, alignment=1
+        )
+        body_style = ParagraphStyle(
+            'Body', parent=styles['Normal'],
+            fontSize=11, textColor=colors.HexColor('#333333'),
+            spaceAfter=10, leading=16
+        )
+        heading_style = ParagraphStyle(
+            'Heading', parent=styles['Heading2'],
+            fontSize=14, textColor=colors.HexColor('#667eea'),
+            spaceBefore=15, spaceAfter=10
+        )
+        
+        story = []
+        story.append(Paragraph(f"📖 Study Guide: {course.name}", title_style))
+        story.append(Paragraph("Generated by Intelli-Tutor AI", subtitle_style))
+        story.append(Spacer(1, 20))
+        
+        # Parse markdown-like content
+        lines = content.split('\n')
+        for line in lines:
+            line = line.strip()
+            if not line:
+                story.append(Spacer(1, 8))
+            elif line.startswith('# '):
+                story.append(Paragraph(f"<b>{line[2:]}</b>", heading_style))
+            elif line.startswith('## '):
+                story.append(Paragraph(f"<b>{line[3:]}</b>", heading_style))
+            elif line.startswith('### '):
+                story.append(Paragraph(f"<b>{line[4:]}</b>", body_style))
+            elif line.startswith('- '):
+                story.append(Paragraph(f"• {line[2:]}", body_style))
+            elif line.startswith('* '):
+                story.append(Paragraph(f"• {line[2:]}", body_style))
+            else:
+                story.append(Paragraph(line, body_style))
+        
+        story.append(Spacer(1, 30))
+        footer_style = ParagraphStyle('Footer', parent=styles['Normal'], fontSize=9, textColor=colors.gray, alignment=1)
+        story.append(Paragraph(f"Generated with Intelli-Tutor • {datetime.utcnow().strftime('%B %d, %Y')}", footer_style))
+        
+        doc.build(story)
+        pdf_buffer.seek(0)
+        
+        from flask import send_file
+        return send_file(
+            pdf_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f"study_guide_{course.name.replace(' ', '_')}.pdf"
+        )
+    except Exception as e:
+        logger.error(f"Study guide PDF export error: {str(e)}")
+        return api_error(f"Failed to generate PDF: {str(e)}", ErrorCode.PROCESSING_ERROR, 500)
+
+
+# --- Document Status Endpoint ---
+
+
+@app.route('/courses/<int:course_id>/documents/<int:document_id>/status', methods=['GET'])
+@jwt_required()
+def get_document_status(course_id, document_id):
+    """Get processing status of a document"""
+    current_user_id = int(get_jwt_identity())
+    course = Course.query.filter_by(id=course_id, user_id=current_user_id).first()
+    
+    if not course:
+        return api_error("Course not found", ErrorCode.NOT_FOUND, 404)
+    
+    document = Document.query.filter_by(id=document_id, course_id=course_id).first()
+    
+    if not document:
+        return api_error("Document not found", ErrorCode.NOT_FOUND, 404)
+    
+    return jsonify({
+        "id": document.id,
+        "filename": document.filename,
+        "processing_status": document.processing_status,
+        "error_message": document.error_message
+    }), 200
+
+
+# --- Analytics Endpoints ---
+
+@app.route('/analytics/summary', methods=['GET'])
+@jwt_required()
+def get_analytics_summary():
+    """Get overall analytics summary for the current user"""
+    current_user_id = int(get_jwt_identity())
+    
+    # Get study time per course (last 30 days)
+    thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+    
+    study_sessions = db.session.query(
+        StudySession.course_id,
+        db.func.sum(StudySession.duration_seconds).label('total_seconds')
+    ).filter(
+        StudySession.user_id == current_user_id,
+        StudySession.created_at >= thirty_days_ago
+    ).group_by(StudySession.course_id).all()
+    
+    # Get quiz attempts and average scores
+    quiz_attempts = QuizAttempt.query.filter_by(user_id=current_user_id).all()
+    quiz_scores = [a.score for a in quiz_attempts]
+    avg_quiz_score = sum(quiz_scores) / len(quiz_scores) if quiz_scores else 0
+    
+    # Get courses for study time breakdown
+    courses = Course.query.filter_by(user_id=current_user_id).all()
+    course_map = {c.id: c.name for c in courses}
+    
+    study_time_by_course = [
+        {
+            "course_id": cs[0],
+            "course_name": course_map.get(cs[0], "Unknown"),
+            "total_minutes": round(cs[1] / 60, 1) if cs[1] else 0
+        }
+        for cs in study_sessions
+    ]
+    
+    # Calculate learning streak (consecutive days with activity)
+    streak = calculate_learning_streak(current_user_id)
+    
+    # Get quiz history for trend chart (last 10 quizzes)
+    recent_quizzes = QuizAttempt.query.filter_by(
+        user_id=current_user_id
+    ).order_by(QuizAttempt.timestamp.desc()).limit(10).all()
+    
+    quiz_trend = [
+        {
+            "date": q.timestamp.isoformat(),
+            "score": q.score,
+            "course_id": q.course_id
+        }
+        for q in reversed(recent_quizzes)
+    ]
+    
+    return jsonify({
+        "total_study_minutes": round(sum(cs[1] or 0 for cs in study_sessions) / 60, 1),
+        "total_quizzes": len(quiz_attempts),
+        "average_quiz_score": round(avg_quiz_score, 1),
+        "learning_streak_days": streak,
+        "study_time_by_course": study_time_by_course,
+        "quiz_score_trend": quiz_trend,
+        "total_courses": len(courses)
+    }), 200
+
+
+def calculate_learning_streak(user_id):
+    """Calculate current learning streak (consecutive days)"""
+    today = datetime.utcnow().date()
+    streak = 0
+    
+    # Get all unique dates with activity (study sessions, quizzes, flashcard reviews)
+    activity_dates = set()
+    
+    # Study sessions
+    sessions = StudySession.query.filter_by(user_id=user_id).all()
+    for s in sessions:
+        activity_dates.add(s.created_at.date())
+    
+    # Quiz attempts
+    quizzes = QuizAttempt.query.filter_by(user_id=user_id).all()
+    for q in quizzes:
+        activity_dates.add(q.timestamp.date())
+    
+    # Count consecutive days from today backwards
+    current_date = today
+    while current_date in activity_dates:
+        streak += 1
+        current_date -= timedelta(days=1)
+    
+    return streak
+
+
+@app.route('/analytics/log-session', methods=['POST'])
+@jwt_required()
+def log_study_session():
+    """Log a study session for analytics"""
+    current_user_id = int(get_jwt_identity())
+    data = request.get_json()
+    
+    course_id = data.get('course_id')
+    duration_seconds = data.get('duration_seconds', 0)
+    activity_type = data.get('activity_type', 'chat')
+    
+    if not course_id:
+        return api_error("course_id is required", ErrorCode.VALIDATION_ERROR)
+    
+    session = StudySession(
+        user_id=current_user_id,
+        course_id=course_id,
+        start_time=datetime.utcnow() - timedelta(seconds=duration_seconds),
+        end_time=datetime.utcnow(),
+        duration_seconds=duration_seconds,
+        activity_type=activity_type
+    )
+    db.session.add(session)
+    db.session.commit()
+    
+    return jsonify({"msg": "Session logged", "session_id": session.id}), 201
+
+
+@app.route('/analytics/daily-activity', methods=['GET'])
+@jwt_required()
+def get_daily_activity():
+    """Get daily activity for the last 30 days (for streak calendar)"""
+    current_user_id = int(get_jwt_identity())
+    thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+    
+    # Get activity by date
+    daily_activity = {}
+    
+    # Study sessions
+    sessions = StudySession.query.filter(
+        StudySession.user_id == current_user_id,
+        StudySession.created_at >= thirty_days_ago
+    ).all()
+    
+    for s in sessions:
+        date_key = s.created_at.date().isoformat()
+        if date_key not in daily_activity:
+            daily_activity[date_key] = {"minutes": 0, "quizzes": 0, "flashcards": 0}
+        daily_activity[date_key]["minutes"] += round(s.duration_seconds / 60, 1)
+    
+    # Quiz attempts
+    quizzes = QuizAttempt.query.filter(
+        QuizAttempt.user_id == current_user_id,
+        QuizAttempt.timestamp >= thirty_days_ago
+    ).all()
+    
+    for q in quizzes:
+        date_key = q.timestamp.date().isoformat()
+        if date_key not in daily_activity:
+            daily_activity[date_key] = {"minutes": 0, "quizzes": 0, "flashcards": 0}
+        daily_activity[date_key]["quizzes"] += 1
+    
+    return jsonify(daily_activity), 200
+
+
+# --- Course Sharing Endpoints ---
+
+@app.route('/courses/<int:course_id>/share', methods=['POST'])
+@jwt_required()
+def create_share_link(course_id):
+    """Create a shareable link for a course"""
+    current_user_id = int(get_jwt_identity())
+    
+    course = Course.query.filter_by(id=course_id, user_id=current_user_id).first()
+    if not course:
+        return api_error("Course not found or not owned by you", ErrorCode.NOT_FOUND, 404)
+    
+    data = request.get_json() or {}
+    permission = data.get('permission', 'read')
+    expires_in_days = data.get('expires_in_days', None)
+    
+    # Generate unique token
+    import secrets
+    share_token = secrets.token_urlsafe(32)
+    
+    expires_at = None
+    if expires_in_days:
+        expires_at = datetime.utcnow() + timedelta(days=expires_in_days)
+    
+    share = CourseShare(
+        course_id=course_id,
+        created_by=current_user_id,
+        share_token=share_token,
+        permission=permission,
+        expires_at=expires_at
+    )
+    db.session.add(share)
+    db.session.commit()
+    
+    return jsonify({
+        "share_token": share_token,
+        "share_url": f"/shared/{share_token}",
+        "permission": permission,
+        "expires_at": expires_at.isoformat() if expires_at else None
+    }), 201
+
+
+@app.route('/courses/<int:course_id>/shares', methods=['GET'])
+@jwt_required()
+def get_course_shares(course_id):
+    """Get all share links for a course"""
+    current_user_id = int(get_jwt_identity())
+    
+    course = Course.query.filter_by(id=course_id, user_id=current_user_id).first()
+    if not course:
+        return api_error("Course not found", ErrorCode.NOT_FOUND, 404)
+    
+    shares = CourseShare.query.filter_by(course_id=course_id, is_active=True).all()
+    
+    return jsonify([{
+        "id": s.id,
+        "share_token": s.share_token,
+        "permission": s.permission,
+        "access_count": s.access_count,
+        "created_at": s.created_at.isoformat(),
+        "expires_at": s.expires_at.isoformat() if s.expires_at else None
+    } for s in shares]), 200
+
+
+@app.route('/courses/<int:course_id>/share/<share_id>', methods=['DELETE'])
+@jwt_required()
+def revoke_share_link(course_id, share_id):
+    """Revoke a share link"""
+    current_user_id = int(get_jwt_identity())
+    
+    course = Course.query.filter_by(id=course_id, user_id=current_user_id).first()
+    if not course:
+        return api_error("Course not found", ErrorCode.NOT_FOUND, 404)
+    
+    share = CourseShare.query.filter_by(id=share_id, course_id=course_id).first()
+    if not share:
+        return api_error("Share link not found", ErrorCode.NOT_FOUND, 404)
+    
+    share.is_active = False
+    db.session.commit()
+    
+    return jsonify({"msg": "Share link revoked"}), 200
+
+
+@app.route('/shared/<share_token>', methods=['GET'])
+def access_shared_course(share_token):
+    """Access a shared course (no auth required for read-only)"""
+    share = CourseShare.query.filter_by(share_token=share_token, is_active=True).first()
+    
+    if not share:
+        return api_error("Invalid or expired share link", ErrorCode.NOT_FOUND, 404)
+    
+    # Check expiration
+    if share.expires_at and share.expires_at < datetime.utcnow():
+        return api_error("Share link has expired", ErrorCode.FORBIDDEN, 403)
+    
+    # Increment access count
+    share.access_count += 1
+    db.session.commit()
+    
+    course = Course.query.get(share.course_id)
+    documents = Document.query.filter_by(course_id=share.course_id).all()
+    owner = User.query.get(course.user_id)
+    
+    return jsonify({
+        "course": {
+            "id": course.id,
+            "name": course.name
+        },
+        "documents": [{
+            "id": d.id,
+            "filename": d.filename,
+            "source_type": d.source_type
+        } for d in documents],
+        "permission": share.permission,
+        "owner_name": owner.first_name or owner.email.split('@')[0] if owner else "Unknown"
+    }), 200
+
+
+# --- Shared Course Chat (No Auth Required) ---
+
+@app.route('/shared/<share_token>/chat', methods=['POST'])
+def shared_course_chat(share_token):
+    """Chat with AI for a shared course (no auth, no history saved)"""
+    # Validate share token
+    share = CourseShare.query.filter_by(share_token=share_token, is_active=True).first()
+    
+    if not share:
+        return api_error("Invalid or expired share link", ErrorCode.NOT_FOUND, 404)
+    
+    if share.expires_at and share.expires_at < datetime.utcnow():
+        return api_error("Share link has expired", ErrorCode.FORBIDDEN, 403)
+    
+    data = request.get_json()
+    question = data.get('question', '').strip()
+    
+    if not question:
+        return api_error("Question is required", ErrorCode.VALIDATION_ERROR, 400)
+    
+    # Get course and documents
+    course = Course.query.get(share.course_id)
+    if not course:
+        return api_error("Course not found", ErrorCode.NOT_FOUND, 404)
+    
+    documents = Document.query.filter_by(course_id=share.course_id).all()
+    
+    if not documents:
+        return api_error("No documents available for chat", ErrorCode.NOT_FOUND, 404)
+    
+    # Streaming response (match format of authenticated endpoint)
+    if data.get('stream', False):
+        # Get document data in the format rag_engine expects
+        docs_data = [{
+            'id': d.id,
+            'filename': d.filename,
+            'vector_store_path': d.vector_store_path
+        } for d in documents]
+        
+        def generate():
+            try:
+                for chunk_data in rag_engine.query_rag_stream(question, share.course_id, docs_data):
+                    if isinstance(chunk_data, dict):
+                        # Final response with sources
+                        sources = chunk_data.get('sources', [])
+                        yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
+                    else:
+                        # Text chunk
+                        yield f"data: {json.dumps({'type': 'chunk', 'content': chunk_data})}\n\n"
+                
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            except Exception as e:
+                logger.error(f"Shared chat streaming error: {str(e)}")
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        
+        return Response(generate(), mimetype='text/event-stream', headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'
+        })
+    
+    # Non-streaming response
+    try:
+        answer_data = rag_engine.query_rag(question, share.course_id, documents)
+        # Note: We don't save messages for shared access
+        return jsonify({"answer": answer_data["answer"], "sources": answer_data["sources"]}), 200
+    except Exception as e:
+        logger.error(f"Shared chat error: {str(e)}")
+        return api_error("Failed to process chat", ErrorCode.PROCESSING_ERROR, 500)
+
+
+# --- Shared Course Study Guide (No Auth Required) ---
+
+@app.route('/shared/<share_token>/study-guide', methods=['POST'])
+def shared_course_study_guide(share_token):
+    """Generate study guide for a shared course (no auth)"""
+    # Validate share token
+    share = CourseShare.query.filter_by(share_token=share_token, is_active=True).first()
+    
+    if not share:
+        return api_error("Invalid or expired share link", ErrorCode.NOT_FOUND, 404)
+    
+    if share.expires_at and share.expires_at < datetime.utcnow():
+        return api_error("Share link has expired", ErrorCode.FORBIDDEN, 403)
+    
+    # Get course and documents
+    course = Course.query.get(share.course_id)
+    if not course:
+        return api_error("Course not found", ErrorCode.NOT_FOUND, 404)
+    
+    documents = Document.query.filter_by(course_id=share.course_id).all()
+    
+    if not documents:
+        return api_error("No documents available", ErrorCode.NOT_FOUND, 404)
+    
+    try:
+        # Get all text from documents (same as authenticated endpoint)
+        full_text = rag_engine.get_all_text_for_course(documents)
+        
+        if not full_text or not full_text.strip():
+            return Response("No content found for this course to generate a study guide.", status=404, mimetype='text/plain')
+        
+        # Generate study guide with streaming (same as authenticated endpoint)
+        stream = rag_engine.generate_study_guide_from_text(full_text)
+        
+        return Response(stream_with_context(stream), mimetype='text/plain', headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no'
+        })
+    except Exception as e:
+        logger.error(f"Shared study guide error: {str(e)}")
+        return api_error(f"Failed to generate study guide: {str(e)}", ErrorCode.PROCESSING_ERROR, 500)
+
+
+# --- Glossary Endpoints ---
+
+@app.route('/courses/<int:course_id>/extract-concepts', methods=['POST'])
+@jwt_required()
+def extract_course_concepts(course_id):
+    """Extract key concepts from course documents and build glossary"""
+    current_user_id = int(get_jwt_identity())
+    
+    course = Course.query.filter_by(id=course_id, user_id=current_user_id).first()
+    if not course:
+        return api_error("Course not found", ErrorCode.NOT_FOUND, 404)
+    
+    documents = Document.query.filter_by(course_id=course_id).all()
+    if not documents:
+        return api_error("No documents in course", ErrorCode.VALIDATION_ERROR)
+    
+    # Use rag_engine to extract concepts
+    concepts = rag_engine.extract_concepts_from_docs(documents)
+    
+    if not concepts:
+        return api_error("Could not extract concepts", ErrorCode.INTERNAL_ERROR, 500)
+    
+    # Clear old glossary and save new
+    CourseGlossary.query.filter_by(course_id=course_id).delete()
+    
+    for concept in concepts:
+        glossary_entry = CourseGlossary(
+            course_id=course_id,
+            term=concept.get('term', ''),
+            definition=concept.get('definition', ''),
+            related_terms=concept.get('related_terms', []),
+            source_document=concept.get('source', None)
+        )
+        db.session.add(glossary_entry)
+    
+    db.session.commit()
+    
+    return jsonify({
+        "msg": "Concepts extracted successfully",
+        "count": len(concepts),
+        "concepts": concepts
+    }), 200
+
+
+@app.route('/courses/<int:course_id>/glossary', methods=['GET'])
+@jwt_required()
+def get_course_glossary(course_id):
+    """Get all glossary terms for a course"""
+    current_user_id = int(get_jwt_identity())
+    
+    # Allow access if owner or has share access
+    course = Course.query.get(course_id)
+    if not course:
+        return api_error("Course not found", ErrorCode.NOT_FOUND, 404)
+    
+    glossary = CourseGlossary.query.filter_by(course_id=course_id).order_by(CourseGlossary.term).all()
+    
+    return jsonify([{
+        "id": g.id,
+        "term": g.term,
+        "definition": g.definition,
+        "related_terms": g.related_terms or [],
+        "source_document": g.source_document
+    } for g in glossary]), 200
+
+
+# --- Essay Grading Endpoint ---
+
+@app.route('/courses/<int:course_id>/grade-essay', methods=['POST'])
+@jwt_required()
+def grade_essay(course_id):
+    """Grade an essay/short answer using AI"""
+    current_user_id = int(get_jwt_identity())
+    
+    course = Course.query.filter_by(id=course_id, user_id=current_user_id).first()
+    if not course:
+        return api_error("Course not found", ErrorCode.NOT_FOUND, 404)
+    
+    data = request.get_json()
+    question = data.get('question', '')
+    student_answer = data.get('answer', '')
+    rubric = data.get('rubric', None)  # Optional custom rubric
+    
+    if not question or not student_answer:
+        return api_error("Question and answer are required", ErrorCode.VALIDATION_ERROR)
+    
+    documents = Document.query.filter_by(course_id=course_id).all()
+    
+    result = rag_engine.grade_essay_response(
+        question=question,
+        student_answer=student_answer,
+        document_models=documents,
+        custom_rubric=rubric
+    )
+    
+    return jsonify(result), 200
 
 
 # --- Main Execution ---

@@ -7,6 +7,7 @@ const AIMessageContent = ({ text, sources, setHighlightedSourceId }) => {
   const [tooltip, setTooltip] = useState({
     isVisible: false,
     filename: '',
+    snippet: '',
     targetRect: null,
   });
   const leaveTimeoutRef = useRef(null);
@@ -24,6 +25,7 @@ const AIMessageContent = ({ text, sources, setHighlightedSourceId }) => {
     setTooltip({
       isVisible: true,
       filename: source.filename,
+      snippet: source.snippet || '',
       targetRect: rect,
     });
   };
@@ -31,7 +33,7 @@ const AIMessageContent = ({ text, sources, setHighlightedSourceId }) => {
   const handleMouseLeave = () => {
     // Set a timer to hide the tooltip, allowing for brief mouse-outs
     leaveTimeoutRef.current = setTimeout(() => {
-      setTooltip({ isVisible: false, filename: '', targetRect: null });
+      setTooltip({ isVisible: false, filename: '', snippet: '', targetRect: null });
     }, 300); // 300ms delay
   };
 
@@ -80,9 +82,10 @@ const AIMessageContent = ({ text, sources, setHighlightedSourceId }) => {
         onMouseEnter={() => clearTimeout(leaveTimeoutRef.current)}
         onMouseLeave={handleMouseLeave}
       >
-        <CitationTooltip 
-          filename={tooltip.filename} 
-          targetRect={tooltip.targetRect} 
+        <CitationTooltip
+          filename={tooltip.filename}
+          snippet={tooltip.snippet}
+          targetRect={tooltip.targetRect}
           isVisible={tooltip.isVisible}
         />
       </div>

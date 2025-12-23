@@ -1,10 +1,6 @@
-# Full requirements for local development
-# Includes Whisper and PyTorch for YouTube transcription
-# For Docker deployment, use requirements.docker.txt
-
---extra-index-url https://download.pytorch.org/whl/cpu
-torch>=2.0.0
-torchaudio>=2.0.0
+# Lightweight requirements for Docker deployment
+# Does NOT include Whisper or PyTorch (too memory-intensive for small droplets)
+# For full functionality including YouTube transcription, use requirements.txt locally
 
 Flask
 Flask-SQLAlchemy
@@ -22,7 +18,6 @@ psycopg[binary]
 gunicorn
 trafilatura
 yt-dlp
-openai-whisper
 youtube-transcript-api
 Flask-Migrate
 Flask-Mail

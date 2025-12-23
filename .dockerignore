@@ -1,0 +1,27 @@
+# Ignore Python virtual environments
+**/venv
+**/.venv
+**/__pycache__
+
+# Ignore Node.js dependencies
+**/node_modules
+
+# Ignore build artifacts
+**/dist
+**/build
+
+# Ignore local instance data and uploads
+**/instance
+**/uploads
+**/temp_audio
+**/vector_stores
+
+# Ignore IDE and OS files
+.vscode
+.idea
+.DS_Store
+*.swo
+*.swp
+
+# Ignore git directory
+.git

@@ -5,6 +5,8 @@ import { useToast } from '../hooks/use-toast';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
+import { FileText, Link, Youtube, UploadCloud } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   Dialog,
   DialogContent,
@@ -14,7 +16,20 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+
+const TabButton = ({ active, icon: Icon, label, onClick }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className={`flex flex-col items-center justify-center p-4 rounded-xl border-2 transition-all duration-200 w-full ${active
+        ? 'border-primary bg-primary/5 text-primary'
+        : 'border-slate-100 dark:border-slate-800 hover:border-slate-200 dark:hover:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-900 text-muted-foreground'
+      }`}
+  >
+    <Icon size={24} className="mb-2" />
+    <span className="text-sm font-medium">{label}</span>
+  </button>
+);
 
 const AddSourceModal = ({ courseId, onSourceAdded }) => {
   const [open, setOpen] = useState(false);
@@ -26,7 +41,7 @@ const AddSourceModal = ({ courseId, onSourceAdded }) => {
   const { toast } = useToast();
 
   const handleSubmit = async (e) => {
-    e.preventDefault(); // Prevent default form submission
+    e.preventDefault();
     setLoading(true);
     const formData = new FormData();
 
@@ -40,7 +55,7 @@ const AddSourceModal = ({ courseId, onSourceAdded }) => {
       formData.append('source_type', 'youtube');
       formData.append('url', url);
     } else {
-      toast({ title: "No source provided", description: "Please select a file or enter a URL in the active tab.", variant: "destructive" });
+      toast({ title: "Missing Information", description: "Please provide a file or URL.", variant: "destructive" });
       setLoading(false);
       return;
     }
@@ -51,10 +66,9 @@ const AddSourceModal = ({ courseId, onSourceAdded }) => {
           'Content-Type': 'multipart/form-data',
         },
       });
-      toast({ title: "Success", description: "Source added successfully." });
-      onSourceAdded(); // Callback to refresh the course page
-      setOpen(false); // Close the modal
-      // Reset state
+      toast({ title: "Success", description: "Source added to course knowledge base." });
+      onSourceAdded();
+      setOpen(false);
       setFile(null);
       setUrl('');
     } catch (error) {
@@ -72,52 +86,115 @@ const AddSourceModal = ({ courseId, onSourceAdded }) => {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button>Add Source</Button>
+        <Button variant="outline" className="border-dashed border-primary/50 text-primary hover:bg-primary/5">
+          <UploadCloud className="mr-2 h-4 w-4" /> Add Source
+        </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-[425px]">
-        <DialogHeader>
-          <DialogTitle>Add a New Source</DialogTitle>
-          <DialogDescription>
-            Add a new source to your course. You can upload a PDF or add a website URL.
-          </DialogDescription>
-        </DialogHeader>
-        <Tabs defaultValue="pdf" className="w-full" onValueChange={setActiveTab}>
-          <TabsList className="grid w-full grid-cols-3">
-            <TabsTrigger value="pdf">PDF</TabsTrigger>
-            <TabsTrigger value="url">Website</TabsTrigger>
-            <TabsTrigger value="youtube">YouTube</TabsTrigger>
-          </TabsList>
-          <TabsContent value="pdf">
-            <div className="grid gap-4 py-4">
-              <div className="grid gap-2">
-                <Label htmlFor="file-upload">Upload a PDF</Label>
-                <Input id="file-upload" type="file" accept=".pdf" ref={fileInputRef} onChange={(e) => setFile(e.target.files[0])} />
-                {file && <p className="text-sm text-muted-foreground mt-2">Selected: {file.name}</p>}
-              </div>
-            </div>
-          </TabsContent>
-          <TabsContent value="url">
-            <div className="grid gap-4 py-4">
-              <div className="grid gap-2">
-                <Label htmlFor="url">Website URL</Label>
-                <Input id="url" placeholder="https://example.com/article" value={url} onChange={(e) => setUrl(e.target.value)} />
-              </div>
-            </div>
-          </TabsContent>
-          <TabsContent value="youtube">
-            <div className="grid gap-4 py-4">
-              <div className="grid gap-2">
-                <Label htmlFor="youtube-url">YouTube URL</Label>
-                <Input id="youtube-url" placeholder="https://www.youtube.com/watch?v=..." value={url} onChange={(e) => setUrl(e.target.value)} />
-              </div>
-            </div>
-          </TabsContent>
-        </Tabs>
-        <DialogFooter>
-          <Button onClick={handleSubmit} disabled={loading}>
-            {loading ? 'Processing...' : 'Add to Course'}
+      <DialogContent className="sm:max-w-[500px] p-0 overflow-hidden bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-800">
+        <div className="p-6 border-b border-slate-100 dark:border-slate-800">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-display">Add Learning Material</DialogTitle>
+            <DialogDescription>
+              Upload documents or link external resources for the AI to study.
+            </DialogDescription>
+          </DialogHeader>
+        </div>
+
+        <div className="p-6 space-y-6">
+          <div className="grid grid-cols-3 gap-3">
+            <TabButton
+              active={activeTab === 'pdf'}
+              onClick={() => setActiveTab('pdf')}
+              icon={FileText}
+              label="PDF"
+            />
+            <TabButton
+              active={activeTab === 'url'}
+              onClick={() => setActiveTab('url')}
+              icon={Link}
+              label="Website"
+            />
+            <TabButton
+              active={activeTab === 'youtube'}
+              onClick={() => setActiveTab('youtube')}
+              icon={Youtube}
+              label="YouTube"
+            />
+          </div>
+
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={activeTab}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.2 }}
+              className="min-h-[120px]"
+            >
+              {activeTab === 'pdf' && (
+                <div
+                  className="border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl p-8 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Input
+                    id="file-upload"
+                    type="file"
+                    accept=".pdf"
+                    ref={fileInputRef}
+                    onChange={(e) => setFile(e.target.files[0])}
+                    className="hidden"
+                  />
+                  <div className="bg-primary/10 p-3 rounded-full mb-3">
+                    <UploadCloud className="text-primary h-6 w-6" />
+                  </div>
+                  <p className="font-medium text-sm">
+                    {file ? file.name : "Click to select a PDF file"}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">MAX 10MB</p>
+                </div>
+              )}
+
+              {activeTab === 'url' && (
+                <div className="space-y-3">
+                  <Label htmlFor="url">Web Page URL</Label>
+                  <Input
+                    id="url"
+                    placeholder="https://..."
+                    value={url}
+                    onChange={(e) => setUrl(e.target.value)}
+                    className="h-11"
+                  />
+                  <p className="text-xs text-muted-foreground">The AI will read the text content of this page.</p>
+                </div>
+              )}
+
+              {activeTab === 'youtube' && (
+                <div className="space-y-3">
+                  <Label htmlFor="yt-url">YouTube Video URL</Label>
+                  <Input
+                    id="yt-url"
+                    placeholder="https://youtube.com/watch?v=..."
+                    value={url}
+                    onChange={(e) => setUrl(e.target.value)}
+                    className="h-11"
+                  />
+                  <p className="text-xs text-muted-foreground">We'll fetch the transcript from the video.</p>
+                </div>
+              )}
+            </motion.div>
+          </AnimatePresence>
+        </div>
+
+        <div className="p-6 bg-slate-50 dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800 flex justify-end">
+          <Button onClick={handleSubmit} disabled={loading} className="w-full sm:w-auto">
+            {loading ? (
+              <span className="flex items-center gap-2">
+                <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                Processing...
+              </span>
+            ) : 'Add Source'}
           </Button>
-        </DialogFooter>
+        </div>
       </DialogContent>
     </Dialog>
   );

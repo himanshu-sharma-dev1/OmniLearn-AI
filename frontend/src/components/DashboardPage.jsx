@@ -1,367 +1,639 @@
-// src/components/DashboardPage.jsx
-import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import {
+  Plus,
+  Search,
+  BookOpen,
+  FileText,
+  Trash2,
+  Edit2,
+  MessageSquare,
+  ClipboardList,
+  Youtube,
+  Link as LinkIcon,
+  Sparkles,
+  Upload,
+  History,
+  X
+} from 'lucide-react';
 import apiClient from '../apiClient';
-import { 
-  AlertDialog, 
-  AlertDialogAction, 
-  AlertDialogCancel, 
-  AlertDialogContent, 
-  AlertDialogDescription, 
-  AlertDialogFooter, 
-  AlertDialogHeader, 
-  AlertDialogTitle, 
-  AlertDialogTrigger 
-} from './ui/alert-dialog';
-import { Button } from './ui/button';
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from './ui/card';
-import { Input } from './ui/input';
-import { Label } from './ui/label';
-import { Trash2, X, BookOpen, FileText, Search, Edit, Check, Upload, User, BrainCircuit, History } from 'lucide-react';
-import EmptyState from './EmptyState';
-import CourseCardSkeleton from './CourseCardSkeleton';
 import { useToast } from '../hooks/use-toast';
+
+import { Button } from './ui/button';
+import { Input } from './ui/input';
+import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
+import { GlassCard } from './ui/glass-card';
+import { AnimatedBackground } from './ui/animated-background';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Skeleton } from './ui/skeleton';
 import NotificationBell from './NotificationBell';
 import { ThemeToggle } from './ThemeToggle';
-import QuizModal from './QuizModal';
-import QuizHistory from './QuizHistory';
 
+// --- Document Type Icon ---
+const getDocIcon = (type) => {
+  if (type === 'youtube') return <Youtube size={14} className="text-red-500 shrink-0" />;
+  if (type === 'url') return <LinkIcon size={14} className="text-blue-500 shrink-0" />;
+  return <FileText size={14} className="text-slate-500 shrink-0" />;
+};
+
+// Card animation variants
+const cardVariants = {
+  hidden: { opacity: 0, y: 20, scale: 0.95 },
+  visible: (i) => ({
+    opacity: 1,
+    y: 0,
+    scale: 1,
+    transition: {
+      delay: i * 0.05,
+      duration: 0.3,
+      ease: [0.25, 0.1, 0.25, 1]
+    }
+  }),
+  exit: {
+    opacity: 0,
+    scale: 0.95,
+    transition: { duration: 0.2 }
+  }
+};
+
+// --- Course Card Component ---
+const CourseCard = ({ course, navigate, onDelete, onRename, index }) => {
+  const fileInputRef = useRef(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const { toast } = useToast();
+
+  const handleFileUpload = async (e) => {
+    e.stopPropagation();
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setIsUploading(true);
+    const formData = new FormData();
+    formData.append('source_type', 'pdf');
+    formData.append('file', files[0]);
+
+    try {
+      await apiClient.post(`/courses/${course.id}/add-source`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      toast({ title: "Uploaded", description: "Document added!" });
+      window.location.reload();
+    } catch (err) {
+      toast({ title: "Error", description: "Upload failed", variant: "destructive" });
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleCardClick = () => {
+    navigate(`/courses/${course.id}`);
+  };
+
+  const stopProp = (e) => e.stopPropagation();
+
+  return (
+    <motion.div
+      layout
+      variants={cardVariants}
+      initial="hidden"
+      animate="visible"
+      exit="exit"
+      custom={index}
+      className="h-full cursor-pointer"
+      onClick={handleCardClick}
+    >
+      <GlassCard className="h-full flex flex-col" hover={true}>
+        {/* Header */}
+        <div className="p-4 pb-3 border-b border-border/50">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex-1 min-w-0">
+              <h3 className="font-semibold text-foreground truncate hover:text-primary transition-colors">
+                {course.name}
+              </h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Course ID: {course.id}
+              </p>
+            </div>
+            <div className="flex items-center gap-1" onClick={stopProp}>
+              <button
+                onClick={() => onRename(course)}
+                className="p-1.5 rounded-lg hover:bg-muted text-blue-500 transition-colors"
+                title="Rename"
+              >
+                <Edit2 size={16} />
+              </button>
+              <button
+                onClick={() => onDelete(course)}
+                className="p-1.5 rounded-lg hover:bg-muted text-red-500 transition-colors"
+                title="Delete"
+              >
+                <Trash2 size={16} />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Documents Section - Fixed Height */}
+        <div className="p-4 pb-2">
+          <h4 className="font-medium text-sm mb-2">Documents</h4>
+          <div className="min-h-[72px]">
+            {course.documents && course.documents.length > 0 ? (
+              <ul className="space-y-1.5">
+                {course.documents.slice(0, 3).map((doc, idx) => (
+                  <li key={idx} className="flex items-start gap-2 text-sm text-muted-foreground">
+                    <span className="mt-0.5">•</span>
+                    <span className="truncate">{doc.filename}</span>
+                  </li>
+                ))}
+                {course.documents.length > 3 && (
+                  <li className="text-sm text-primary/70">+{course.documents.length - 3} more</li>
+                )}
+              </ul>
+            ) : (
+              <p className="text-sm text-muted-foreground flex items-center gap-2">
+                <FileText size={14} />
+                No documents uploaded yet.
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* Upload Section */}
+        <div className="px-4 pb-4" onClick={stopProp}>
+          <h4 className="font-medium text-sm mb-2">Upload Documents</h4>
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileUpload}
+            accept=".pdf"
+            className="block w-full text-xs text-muted-foreground mb-2
+              file:mr-2 file:py-1.5 file:px-3 file:rounded file:border-0 
+              file:text-xs file:font-medium file:bg-muted file:text-foreground 
+              hover:file:bg-muted/80 cursor-pointer"
+          />
+          <Button
+            className="w-full h-9 bg-emerald-500 hover:bg-emerald-600 text-white"
+            disabled={isUploading}
+            onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
+          >
+            <Upload size={14} className="mr-1.5" />
+            {isUploading ? 'Uploading...' : 'Upload PDFs'}
+          </Button>
+        </div>
+
+        {/* Action Buttons */}
+        <div className="p-4 pt-0 flex gap-2" onClick={stopProp}>
+          <Button
+            size="sm"
+            className="flex-1 h-9 bg-purple-500 hover:bg-purple-600 text-white"
+            onClick={() => navigate(`/courses/${course.id}`, { state: { openQuiz: true } })}
+          >
+            <ClipboardList size={14} className="mr-1.5" />
+            Generate Quiz
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="flex-1 h-9"
+            onClick={() => navigate(`/courses/${course.id}`)}
+          >
+            <History size={14} className="mr-1.5" />
+            View History
+          </Button>
+        </div>
+
+        {/* Chat Button Full Width */}
+        <div className="px-4 pb-4" onClick={stopProp}>
+          <Button
+            className="w-full h-10 bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white"
+            onClick={() => navigate(`/chat/${course.id}`)}
+          >
+            <MessageSquare size={16} className="mr-2" />
+            Chat with AI
+          </Button>
+        </div>
+      </GlassCard>
+    </motion.div>
+  );
+};
+
+// --- Rename Modal ---
+const RenameModal = ({ course, onClose, onRename }) => {
+  const [name, setName] = useState(course?.name || '');
+  const [loading, setLoading] = useState(false);
+
+  if (!course) return null;
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    setLoading(true);
+    await onRename(course.id, name);
+    setLoading(false);
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.9, y: 20 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.9, y: 20 }}
+        className="bg-background rounded-xl w-full max-w-md p-6 shadow-2xl border border-border"
+      >
+        <h2 className="text-lg font-semibold mb-4">Rename Course</h2>
+        <form onSubmit={handleSubmit}>
+          <Input
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="mb-4"
+          />
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={!name.trim() || loading}>
+              {loading ? 'Saving...' : 'Save'}
+            </Button>
+          </div>
+        </form>
+      </motion.div>
+    </motion.div>
+  );
+};
+
+// --- Main Dashboard ---
 const DashboardPage = () => {
   const [courses, setCourses] = useState([]);
-  const [newCourseName, setNewCourseName] = useState('');
-  const [selectedFiles, setSelectedFiles] = useState({});
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [searchTerm, setSearchTerm] = useState('');
+  const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [isUploading, setIsUploading] = useState({});
+  const [searchQuery, setSearchQuery] = useState('');
+  const [newCourseName, setNewCourseName] = useState('');
+  const [isCreating, setIsCreating] = useState(false);
+  const [courseToDelete, setCourseToDelete] = useState(null);
   const [courseToRename, setCourseToRename] = useState(null);
-  const [renamingCourseName, setRenamingCourseName] = useState('');
+
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  const [isQuizModalOpen, setIsQuizModalOpen] = useState(false);
-  const [quizData, setQuizData] = useState(null);
-  const [isGeneratingQuiz, setIsGeneratingQuiz] = useState(false);
-  const [courseForQuiz, setCourseForQuiz] = useState(null);
-  const [historyVisible, setHistoryVisible] = useState(null);
+  const getAvatarUrl = (path) => {
+    if (!path) return null;
+    const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001';
+    return `${baseUrl}/uploads/${path}`;
+  };
 
   useEffect(() => {
-    const fetchCourses = async () => {
+    const fetchData = async () => {
       try {
-        const response = await apiClient.get('/courses');
-        setCourses(response.data);
-      } catch (error) {
-        console.error('Error fetching courses:', error);
-        toast({ title: "Error", description: "Failed to fetch courses.", variant: "destructive" });
+        const [coursesRes, profileRes] = await Promise.all([
+          apiClient.get('/courses'),
+          apiClient.get('/profile')
+        ]);
+        setCourses(coursesRes.data);
+        setUser(profileRes.data);
+      } catch (err) {
+        console.error(err);
       } finally {
         setLoading(false);
       }
     };
-    fetchCourses();
-  }, [toast]);
+    fetchData();
+  }, []);
 
-  const handleCreateCourse = async () => {
-    if (!newCourseName.trim()) {
-      toast({ title: "Error", description: "Course name cannot be empty.", variant: "destructive" });
-      return;
-    }
+  const handleCreateCourse = async (e) => {
+    e.preventDefault();
+    if (!newCourseName.trim()) return;
+    setIsCreating(true);
     try {
-      const response = await apiClient.post('/courses', { name: newCourseName });
-      const newCourse = { id: response.data.course_id, name: newCourseName, documents: [] };
-      setCourses([...courses, newCourse]);
+      const res = await apiClient.post('/courses', { name: newCourseName });
+      toast({ title: "Success", description: "Course created!" });
+      const courseId = res.data.course_id || res.data.id;
+      setCourses([...courses, { id: courseId, name: newCourseName, documents: [] }]);
       setNewCourseName('');
-      toast({ title: "Success", description: "Course created successfully." });
-    } catch (error) {
-      console.error('Error creating course:', error);
-      toast({ title: "Error", description: "Failed to create course.", variant: "destructive" });
-    }
-  };
-
-  const handleFileSelect = (event, courseId) => {
-    const files = Array.from(event.target.files);
-    if (files.length > 0) {
-      setSelectedFiles({ ...selectedFiles, [courseId]: files });
-    }
-  };
-
-  const handleUploadDocument = async (e, courseId) => {
-    e.stopPropagation();
-    if (!selectedFiles[courseId] || selectedFiles[courseId].length === 0) {
-      toast({ title: "Error", description: "Please select files to upload.", variant: "destructive" });
-      return;
-    }
-
-    const formData = new FormData();
-    formData.append('file', selectedFiles[courseId][0]); // Only take the first file
-    formData.append('source_type', 'pdf');
-
-    setIsUploading({ ...isUploading, [courseId]: true });
-
-    try {
-      await apiClient.post(`/courses/${courseId}/add-source`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
-      toast({ title: "Success", description: "Files uploaded successfully!" });
-      setSelectedFiles({ ...selectedFiles, [courseId]: [] });
-      const response = await apiClient.get('/courses');
-      setCourses(response.data);
-    } catch (error) {
-      console.error('Error uploading files:', error);
-      const errorMessage = error.response?.data?.msg || 'File upload failed.';
-      toast({ title: "Error", description: errorMessage, variant: "destructive" });
-    } finally {
-      setIsUploading({ ...isUploading, [courseId]: false });
-    }
-  };
-
-  const handleDeleteConfirm = async (e, courseId, courseName) => {
-    e.stopPropagation();
-    setIsDeleting(true);
-    try {
-      await apiClient.delete(`/courses/${courseId}`);
-      setCourses(courses.filter(c => c.id !== courseId));
-      toast({ title: "Success", description: `Course "${courseName}" deleted.` });
-    } catch (error) {
-      console.error('Error deleting course:', error);
-      toast({ title: "Error", description: "Failed to delete course.", variant: "destructive" });
-    } finally {
-      setIsDeleting(false);
-    }
-  };
-
-  const handleRenameConfirm = async (e, courseId) => {
-    e.stopPropagation();
-    if (!renamingCourseName.trim()) {
-      toast({ title: "Error", description: "New course name cannot be empty.", variant: "destructive" });
-      return;
-    }
-    try {
-      const response = await apiClient.put(`/courses/${courseId}`, { name: renamingCourseName });
-      setCourses(courses.map(c => c.id === courseId ? { ...c, name: response.data.name } : c));
-      setCourseToRename(null);
-      setRenamingCourseName('');
-      toast({ title: "Success", description: `Course renamed to "${response.data.name}".` });
-    } catch (error) {
-      console.error('Error renaming course:', error);
-      toast({ title: "Error", description: "Failed to rename course.", variant: "destructive" });
-    }
-  };
-
-  const handleGenerateQuiz = async (e, course) => {
-    e.stopPropagation();
-    setIsGeneratingQuiz(true);
-    setCourseForQuiz(course);
-    try {
-      const response = await apiClient.post(`/courses/${course.id}/generate-quiz`);
-      setQuizData(response.data.quiz);
-      setIsQuizModalOpen(true);
+      navigate(`/courses/${courseId}`);
     } catch (err) {
-      console.error('Error generating quiz:', err);
-      toast({
-        title: "Error",
-        description: err.response?.data?.error || 'Failed to generate quiz.',
-        variant: "destructive",
-      });
+      toast({ title: "Error", description: "Failed to create course", variant: "destructive" });
     } finally {
-      setIsGeneratingQuiz(false);
+      setIsCreating(false);
     }
   };
 
-  const filteredCourses = courses.filter(course =>
-    course.name.toLowerCase().includes(searchTerm.toLowerCase())
+  const handleDeleteCourse = async () => {
+    if (!courseToDelete) return;
+    try {
+      await apiClient.delete(`/courses/${courseToDelete.id}`);
+      setCourses(courses.filter(c => c.id !== courseToDelete.id));
+      toast({ title: "Deleted", description: "Course removed" });
+    } catch (err) {
+      toast({ title: "Error", description: "Failed to delete", variant: "destructive" });
+    } finally {
+      setCourseToDelete(null);
+    }
+  };
+
+  const handleRenameCourse = async (id, newName) => {
+    try {
+      await apiClient.put(`/courses/${id}`, { name: newName });
+      setCourses(courses.map(c => c.id === id ? { ...c, name: newName } : c));
+      toast({ title: "Renamed", description: "Course name updated" });
+      setCourseToRename(null);
+    } catch (err) {
+      toast({ title: "Error", description: "Failed to rename", variant: "destructive" });
+    }
+  };
+
+  const filteredCourses = courses.filter(c =>
+    c.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  const userName = user ? (user.first_name || user.email?.split('@')[0] || 'User') : 'User';
+
+  const getGreeting = () => {
+    const hour = new Date().getHours();
+    if (hour < 12) return 'Good morning';
+    if (hour < 18) return 'Good afternoon';
+    return 'Good evening';
+  };
+
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <div className="container mx-auto p-4 sm:p-6 lg:p-8">
-        <header className="flex justify-between items-center mb-8">
-          <h1 className="text-4xl font-bold">My Dashboard</h1>
-          <div className="flex items-center space-x-2">
-            <div className="relative w-full max-w-xs">
-              <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                type="text"
-                placeholder="Search courses..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-10"
-              />
+    <div className="min-h-screen relative">
+      <AnimatedBackground />
+
+      <div className="relative z-10">
+        {/* Header */}
+        <header className="sticky top-0 z-40 bg-background/80 backdrop-blur-md border-b border-border">
+          <div className="container mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="flex items-center justify-between h-16">
+              {/* Logo */}
+              <div className="flex items-center gap-3">
+                <motion.div
+                  whileHover={{ rotate: 15 }}
+                  className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center"
+                >
+                  <Sparkles className="text-white" size={20} />
+                </motion.div>
+                <span className="font-display font-bold text-xl hidden sm:block">Intelli-Tutor</span>
+              </div>
+
+              {/* Search */}
+              <div className="flex-1 max-w-md mx-4 hidden md:block">
+                <motion.div
+                  className="relative"
+                  initial={false}
+                  animate={{ scale: searchQuery ? 1.02 : 1 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={16} />
+                  <Input
+                    placeholder="Search courses..."
+                    className="pl-9 pr-9 bg-muted/50 border-transparent focus:border-primary transition-all"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                  />
+                  <AnimatePresence>
+                    {searchQuery && (
+                      <motion.button
+                        initial={{ opacity: 0, scale: 0.8 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.8 }}
+                        onClick={() => setSearchQuery('')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      >
+                        <X size={14} />
+                      </motion.button>
+                    )}
+                  </AnimatePresence>
+                </motion.div>
+              </div>
+
+              {/* Right */}
+              <div className="flex items-center gap-2">
+                <NotificationBell />
+                <ThemeToggle />
+                <Link to="/profile">
+                  <Avatar className="h-9 w-9 ring-2 ring-primary/20 hover:ring-primary/50 transition-all cursor-pointer">
+                    <AvatarImage src={getAvatarUrl(user?.avatar)} />
+                    <AvatarFallback className="bg-gradient-to-br from-indigo-500 to-purple-600 text-white text-sm">
+                      {userName[0].toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
+                </Link>
+              </div>
             </div>
-            <NotificationBell />
-            <ThemeToggle />
-            <Button variant="ghost" size="icon" onClick={() => navigate('/profile')}>
-              <User size={24} />
-            </Button>
           </div>
         </header>
 
-        <main>
-          <Card className="mb-8">
-            <CardHeader>
-              <CardTitle>Create a New Course</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex space-x-2">
-                <Input
-                  type="text"
-                  id="create-course-input"
-                  placeholder="Enter new course name"
-                  value={newCourseName}
-                  onChange={(e) => setNewCourseName(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && handleCreateCourse()}
-                />
-                <Button onClick={handleCreateCourse}>Create Course</Button>
-              </div>
-            </CardContent>
-          </Card>
+        <main className="container mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          {/* Welcome Section */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-8"
+          >
+            <h1 className="text-3xl sm:text-4xl font-display font-bold">
+              {getGreeting()}, {userName}!
+            </h1>
+            <p className="text-muted-foreground mt-2">
+              {courses.length > 0
+                ? `You have ${courses.length} course${courses.length !== 1 ? 's' : ''} in your library`
+                : 'Start by creating your first course'}
+            </p>
+          </motion.div>
 
-          <div>
-            <h2 className="text-2xl font-semibold mb-4">Your Courses</h2>
-            {loading ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {[...Array(3)].map((_, i) => <CourseCardSkeleton key={i} />)}
+          {/* Create Course */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.1 }}
+          >
+            <GlassCard className="mb-8">
+              <div className="p-5">
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="w-1 h-5 rounded-full bg-gradient-to-b from-indigo-500 to-purple-500" />
+                  <h2 className="font-semibold">Create New Course</h2>
+                </div>
+                <form onSubmit={handleCreateCourse} className="flex gap-3">
+                  <div className="flex-1 relative">
+                    <Plus className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={18} />
+                    <Input
+                      placeholder="Enter course name..."
+                      className="pl-10 h-11 bg-muted/50"
+                      value={newCourseName}
+                      onChange={(e) => setNewCourseName(e.target.value)}
+                    />
+                  </div>
+                  <Button
+                    type="submit"
+                    disabled={!newCourseName.trim() || isCreating}
+                    className="h-11 px-6 bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600"
+                  >
+                    {isCreating ? 'Creating...' : 'Create'}
+                  </Button>
+                </form>
               </div>
-            ) : filteredCourses.length === 0 ? (
-              <EmptyState
-                icon={BookOpen}
-                title="No Courses Yet"
-                description="It looks like you haven't created any courses. Start by adding your first course!"
-                buttonText="Create Your First Course"
-                onButtonClick={() => document.getElementById('create-course-input').focus()}
+            </GlassCard>
+          </motion.div>
+
+          {/* Mobile Search */}
+          <div className="md:hidden mb-6">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={16} />
+              <Input
+                placeholder="Search courses..."
+                className="pl-9 h-11 bg-muted/50"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
               />
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                <AnimatePresence>
-                  {filteredCourses.map((course) => (
-                    <motion.div
-                      key={course.id}
-                      layout
-                      initial={{ opacity: 0, y: 50, scale: 0.9 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: 20, scale: 0.9 }}
-                      whileHover={{ scale: 1.03, y: -5 }}
-                      transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-                    >
-                      <Card 
-                        className="flex flex-col h-full hover:shadow-lg transition-shadow duration-300 cursor-pointer"
-                        onClick={() => navigate(`/courses/${course.id}`)}
-                      >
-                        <CardHeader className="flex-row justify-between items-start">
-                          <div>
-                            {courseToRename?.id === course.id ? (
-                              <div className="flex items-center gap-2">
-                                <Input
-                                  value={renamingCourseName}
-                                  onChange={(e) => setRenamingCourseName(e.target.value)}
-                                  onClick={(e) => e.stopPropagation()}
-                                  onKeyPress={(e) => e.key === 'Enter' && handleRenameConfirm(e, course.id)}
-                                  className="text-xl font-semibold"
-                                />
-                                <Button variant="ghost" size="icon" onClick={(e) => handleRenameConfirm(e, course.id)}><Check size={20} /></Button>
-                                <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); setCourseToRename(null); }}><X size={20} /></Button>
-                              </div>
-                            ) : (
-                              <CardTitle>{course.name}</CardTitle>
-                            )}
-                            <CardDescription>Documents: {course.documents?.length || 0}</CardDescription>
-                          </div>
-                          <div className="flex items-center">
-                            <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); setCourseToRename(course); setRenamingCourseName(course.name); }}>
-                              <Edit size={20} />
-                            </Button>
-                            <AlertDialog>
-                              <AlertDialogTrigger asChild>
-                                <Button variant="ghost" size="icon" onClick={(e) => e.stopPropagation()}>
-                                  <Trash2 size={20} className="text-destructive" />
-                                </Button>
-                              </AlertDialogTrigger>
-                              <AlertDialogContent onClick={(e) => e.stopPropagation()}>
-                                <AlertDialogHeader>
-                                  <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
-                                  <AlertDialogDescription>
-                                    This action cannot be undone. This will permanently delete the course "{course.name}" and all associated data.
-                                  </AlertDialogDescription>
-                                </AlertDialogHeader>
-                                <AlertDialogFooter>
-                                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                  <AlertDialogAction onClick={(e) => handleDeleteConfirm(e, course.id, course.name)} disabled={isDeleting}>
-                                    {isDeleting ? 'Deleting...' : 'Continue'}
-                                  </AlertDialogAction>
-                                </AlertDialogFooter>
-                              </AlertDialogContent>
-                            </AlertDialog>
-                          </div>
-                        </CardHeader>
-                        <CardContent className="flex-grow">
-                          {course.documents && course.documents.length > 0 ? (
-                            <ul className="space-y-1 text-sm text-muted-foreground">
-                              {course.documents.slice(0, 3).map(doc => (
-                                <li key={doc.id} className="flex items-center gap-2"><FileText size={14} />{doc.filename}</li>
-                              ))}
-                              {course.documents.length > 3 && <li>...and {course.documents.length - 3} more.</li>}
-                            </ul>
-                          ) : (
-                            <p className="text-sm text-muted-foreground flex items-center gap-2"><FileText size={14} />No documents yet.</p>
-                          )}
-                        </CardContent>
-                        <CardFooter className="flex flex-col items-start gap-4">
-                          <div className="w-full space-y-2">
-                            <Label htmlFor={`file-upload-${course.id}`}>Upload Documents</Label>
-                            <Input
-                              id={`file-upload-${course.id}`}
-                              type="file"
-                              accept=".pdf"
-                              // Removed 'multiple' attribute as backend expects single file
-                              onClick={(e) => e.stopPropagation()}
-                              onChange={(e) => handleFileSelect(e, course.id)}
-                            />
-                            <Button 
-                              onClick={(e) => handleUploadDocument(e, course.id)} 
-                              disabled={!selectedFiles[course.id] || isUploading[course.id]} 
-                              className="w-full bg-green-600 hover:bg-green-700 text-white"
-                            >
-                              {isUploading[course.id] ? 'Uploading...' : 'Upload'}
-                            </Button>
-                          </div>
-                          <div className="w-full grid grid-cols-2 gap-2">
-                            <Button 
-                              onClick={(e) => handleGenerateQuiz(e, course)} 
-                              disabled={isGeneratingQuiz && courseForQuiz?.id === course.id}
-                              className="bg-purple-600 hover:bg-purple-700 text-white"
-                            >
-                              <BrainCircuit size={16} className="mr-2" />
-                              {isGeneratingQuiz && courseForQuiz?.id === course.id ? 'Generating...' : 'Generate Quiz'}
-                            </Button>
-                            <Button variant="secondary" onClick={(e) => { e.stopPropagation(); setHistoryVisible(prev => (prev === course.id ? null : course.id)); }}>
-                              <History size={16} className="mr-2" />
-                              History
-                            </Button>
-                          </div>
-                        </CardFooter>
-                        {historyVisible === course.id && (
-                          <div className="p-4 border-t">
-                            <QuizHistory courseId={course.id} />
-                          </div>
-                        )}
-                      </Card>
-                    </motion.div>
-                  ))}
-                </AnimatePresence>
-              </div>
-            )}
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
           </div>
-        </main>
 
-        {isQuizModalOpen && quizData && (
-          <QuizModal 
-            quiz={quizData}
-            courseId={courseForQuiz?.id}
-            courseName={courseForQuiz?.name}
-            onClose={() => setIsQuizModalOpen(false)}
+          {/* Search Results Info */}
+          <AnimatePresence mode="wait">
+            {searchQuery && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="mb-4 flex items-center gap-2 text-sm text-muted-foreground"
+              >
+                <Search size={14} />
+                <span>
+                  {filteredCourses.length} result{filteredCourses.length !== 1 ? 's' : ''} for "{searchQuery}"
+                </span>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Courses Section Title */}
+          {!loading && filteredCourses.length > 0 && !searchQuery && (
+            <motion.h2
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ delay: 0.2 }}
+              className="text-lg font-semibold mb-4 flex items-center gap-2"
+            >
+              <BookOpen size={20} className="text-primary" />
+              Your Courses
+            </motion.h2>
+          )}
+
+          {/* Course Grid */}
+          {loading ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+              {[1, 2, 3].map(i => (
+                <GlassCard key={i}>
+                  <div className="p-4 border-b border-border/50">
+                    <Skeleton className="h-5 w-3/4 mb-1" />
+                    <Skeleton className="h-3 w-1/3" />
+                  </div>
+                  <div className="p-4">
+                    <Skeleton className="h-4 w-1/2 mb-3" />
+                    <Skeleton className="h-3 w-full mb-1.5" />
+                    <Skeleton className="h-3 w-2/3 mb-4" />
+                    <Skeleton className="h-4 w-1/2 mb-2" />
+                    <Skeleton className="h-9 w-full mb-3" />
+                  </div>
+                  <div className="p-4 pt-0 flex gap-2">
+                    <Skeleton className="h-9 flex-1" />
+                    <Skeleton className="h-9 flex-1" />
+                  </div>
+                  <div className="px-4 pb-4">
+                    <Skeleton className="h-10 w-full" />
+                  </div>
+                </GlassCard>
+              ))}
+            </div>
+          ) : filteredCourses.length > 0 ? (
+            <motion.div
+              layout
+              className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5"
+            >
+              <AnimatePresence mode="popLayout">
+                {filteredCourses.map((course, index) => (
+                  <CourseCard
+                    key={course.id}
+                    course={course}
+                    navigate={navigate}
+                    onDelete={setCourseToDelete}
+                    onRename={setCourseToRename}
+                    index={index}
+                  />
+                ))}
+              </AnimatePresence>
+            </motion.div>
+          ) : (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="text-center py-16"
+            >
+              <motion.div
+                animate={{ rotate: [0, 10, -10, 0] }}
+                transition={{ duration: 2, repeat: Infinity }}
+                className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-indigo-500/20 to-purple-500/20 flex items-center justify-center"
+              >
+                <BookOpen size={28} className="text-primary" />
+              </motion.div>
+              <h3 className="text-lg font-semibold mb-2">
+                {searchQuery ? 'No courses found' : 'No courses yet'}
+              </h3>
+              <p className="text-muted-foreground">
+                {searchQuery ? 'Try a different search term' : 'Create your first course to get started'}
+              </p>
+            </motion.div>
+          )}
+        </main>
+      </div>
+
+      {/* Delete Dialog */}
+      <AlertDialog open={!!courseToDelete} onOpenChange={() => setCourseToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete "{courseToDelete?.name}"?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete this course and all its documents.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDeleteCourse} className="bg-destructive hover:bg-destructive/90">
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AnimatePresence>
+        {courseToRename && (
+          <RenameModal
+            course={courseToRename}
+            onClose={() => setCourseToRename(null)}
+            onRename={handleRenameCourse}
           />
         )}
-      </div>
+      </AnimatePresence>
     </div>
   );
 };
