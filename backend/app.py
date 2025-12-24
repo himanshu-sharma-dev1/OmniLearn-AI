@@ -18,9 +18,11 @@ from flask_limiter.util import get_remote_address
 
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-from . import rag_engine # Import the RAG engine
+import rag_engine # Import the RAG engine
 
 from dotenv import load_dotenv
+
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 load_dotenv(override=False)
 
@@ -29,6 +31,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+# Fix for HTTPS behind Nginx proxy
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 CORS(app, resources={r"/*": {"origins": "*", "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"], "allow_headers": ["Content-Type", "Authorization"]}})
 
 # --- Configuration ---
@@ -403,18 +407,18 @@ def forgot_password():
         db.session.commit()
 
         # Generate the reset URL using an environment variable for flexibility
-        with app.app_context():
-            frontend_url = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
-            reset_url = f"{frontend_url}/reset-password/{token}"
+        frontend_url = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
+        reset_url = f"{frontend_url}/reset-password/{token}"
 
-        msg = Message(
-            "Password Reset Request",
-            recipients=[user.email],
-            html=f"<p>Click this link to reset your password: <a href='{reset_url}'>{reset_url}</a></p>"
-        )
+        # Use SendGrid email service (bypasses blocked SMTP ports)
+        from email_service import send_password_reset_email
         try:
-            mail.send(msg)
-            app.logger.info(f"Password reset email sent to {user.email}")
+            success = send_password_reset_email(user.email, reset_url)
+            if success:
+                app.logger.info(f"Password reset email sent to {user.email}")
+            else:
+                app.logger.error(f"Failed to send email to {user.email}")
+                return jsonify({"msg": "Failed to send password reset email. Please try again later."}), 500
         except Exception as e:
             app.logger.error(f"Failed to send email: {e}", exc_info=True)
             return jsonify({"msg": "Failed to send password reset email"}), 500

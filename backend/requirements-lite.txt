@@ -10,6 +10,7 @@ Flask-Cors
 Flask-Limiter
 Flask-Migrate
 Flask-Mail
+sendgrid
 
 # Database
 psycopg[binary]
