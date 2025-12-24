@@ -318,7 +318,7 @@ const CoursePage = () => {
               <div className="flex flex-wrap gap-3">
                 <motion.div whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}>
                   <Button
-                    onClick={() => navigate(`/chat/${course.id}`)}
+                    onClick={() => navigate(`/chat/${course.id}`, { replace: true })}
                     className="bg-white text-indigo-600 hover:bg-white/90 font-semibold h-11 px-6"
                   >
                     <MessageSquare size={18} className="mr-2" />
@@ -340,7 +340,7 @@ const CoursePage = () => {
 
                 <motion.div whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}>
                   <Button
-                    onClick={() => navigate(`/courses/${course.id}/flashcards`)}
+                    onClick={() => navigate(`/courses/${course.id}/flashcards`, { replace: true })}
                     disabled={course.documents?.length === 0}
                     variant="secondary"
                     className="bg-white/20 text-white hover:bg-white/30 border-white/30 font-semibold h-11 px-6"
@@ -352,7 +352,7 @@ const CoursePage = () => {
 
                 <motion.div whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}>
                   <Button
-                    onClick={() => navigate(`/courses/${course.id}/study-guide`)}
+                    onClick={() => navigate(`/courses/${course.id}/study-guide`, { replace: true })}
                     disabled={course.documents?.length === 0}
                     variant="secondary"
                     className="bg-white/20 text-white hover:bg-white/30 border-white/30 font-semibold h-11 px-6"
@@ -364,7 +364,7 @@ const CoursePage = () => {
 
                 <motion.div whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}>
                   <Button
-                    onClick={() => navigate(`/courses/${course.id}/mind-map`)}
+                    onClick={() => navigate(`/courses/${course.id}/mind-map`, { replace: true })}
                     disabled={course.documents?.length === 0}
                     variant="secondary"
                     className="bg-white/20 text-white hover:bg-white/30 border-white/30 font-semibold h-11 px-6"
