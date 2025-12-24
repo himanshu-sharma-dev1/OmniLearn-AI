@@ -30,9 +30,31 @@ def send_email(to_email: str, subject: str, html_content: str) -> bool:
     if SENDGRID_API_KEY:
         return _send_via_sendgrid(to_email, subject, html_content)
     
-    # Fallback to Flask-Mail (for local development)
-    logger.warning("SENDGRID_API_KEY not set, email not sent. Set it for production.")
-    return False
+    # Fallback to Flask-Mail SMTP (for local development)
+    return _send_via_flask_mail(to_email, subject, html_content)
+
+
+def _send_via_flask_mail(to_email: str, subject: str, html_content: str) -> bool:
+    """Send email using Flask-Mail SMTP (for local development)"""
+    try:
+        from flask import current_app
+        from flask_mail import Message
+        
+        # Import mail instance from app
+        from app import mail
+        
+        msg = Message(
+            subject=subject,
+            recipients=[to_email],
+            html=html_content
+        )
+        mail.send(msg)
+        logger.info(f"Email sent successfully to {to_email} via Flask-Mail SMTP")
+        return True
+    except Exception as e:
+        logger.error(f"Flask-Mail SMTP error: {e}", exc_info=True)
+        logger.warning("Set SENDGRID_API_KEY for production email delivery")
+        return False
 
 
 def _send_via_sendgrid(to_email: str, subject: str, html_content: str) -> bool:
